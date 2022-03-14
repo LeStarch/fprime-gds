@@ -271,7 +271,7 @@ class IpHandler(abc.ABC):
 
     @abc.abstractmethod
     def open_impl(self):
-        """ Implementation of the handler's open call"""
+        """Implementation of the handler's open call"""
 
     def close(self):
         """
@@ -286,10 +286,10 @@ class IpHandler(abc.ABC):
 
     @abc.abstractmethod
     def close_impl(self):
-        """ Implementation of the handler's close call"""
+        """Implementation of the handler's close call"""
 
     def stop(self):
-        """ Stop the handler from reconnecting and close"""
+        """Stop the handler from reconnecting and close"""
         self.running = False
         self.close()
 
@@ -316,7 +316,7 @@ class IpHandler(abc.ABC):
 
     @abc.abstractmethod
     def read_impl(self):
-        """ Implementation of the handler's read call"""
+        """Implementation of the handler's read call"""
 
     def write(self, message):
         """
@@ -338,11 +338,11 @@ class IpHandler(abc.ABC):
 
     @abc.abstractmethod
     def write_impl(self, message):
-        """ Implementation of the handler's write call"""
+        """Implementation of the handler's write call"""
 
     @staticmethod
     def kill_socket(sock):
-        """ Kills a socket connection, but shutting it down and then closing. """
+        """Kills a socket connection, but shutting it down and then closing."""
         if sock is None:
             return
         try:
@@ -399,7 +399,6 @@ class TcpHandler(IpHandler):
         finally:
             self.client = None
             self.client_address = None
-
 
     def read_impl(self):
         """
