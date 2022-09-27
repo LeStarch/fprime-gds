@@ -75,7 +75,7 @@ class ChDecoder(Decoder):
             ch_time = TimeType()
             ch_time.deserialize(data, ptr)
             ptr += ch_time.getSize()
-            
+
             if ch_id not in self.__dict:
                 raise DecodingException(f"Channel {ch_id} not found in dictionary")
             # Retrieve the template instance for this channel
