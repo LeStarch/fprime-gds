@@ -124,9 +124,6 @@ def generateSequence(inputFile, outputFile, dictionary, timebase, cont=False):
     writer.close()
 
 
-help_text = "seqgen.py -d"
-
-
 def main():
     """
     The main program if run from the command line. Note that this file can also be used

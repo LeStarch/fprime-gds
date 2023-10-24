@@ -4,8 +4,17 @@ from datetime import datetime, timedelta
 from fprime_gds.common.data_types import exceptions as gseExceptions
 from fprime_gds.common.models.common.command import Descriptor
 
+from fprime_gds.common.utils.string_command_parsing import parse_command_from_string
+
 
 class SeqFileParser:
+    """ Parser to handle the sequence file format """
+
+    def convertArgument(self):
+        """ Convert a single argument from JSON to the fprime type
+        """
+
+
     def parse(self, filename, cont=False):
         """
         Generator that parses an input sequence file and returns a tuple
@@ -147,6 +156,8 @@ class SeqFileParser:
                 options = ["%Y-%jT%H:%M:%S.%f", "%Y-%jT%H:%M:%S"]
                 return parseTimeStringOption(timeStr, options)
 
+
+
             descriptor = None
             d = time[0]
             t = time[1:]
@@ -185,6 +196,7 @@ class SeqFileParser:
             for i, line in enumerate(inputFile):
                 try:
                     line = line.strip()
+                    time_format, command_name, *arguments = parse_command_from_string(line.strip())
                     # ignore blank lines and comments
                     if line and line[0] != ";":
                         line = removeTrailingComments(line)
