@@ -185,7 +185,7 @@ export class SaferParser {
     }
 
     /**
-     * Replace JSON notation for fprime-replcement objects with the wider JSON specification
+     * Replace JSON notation for fprime-replacement objects with the wider JSON specification
      *
      * Replace {"fprime-replacement: "some value"} with <some value> restoring the full JSON specification for items not
      * supported by JavaScript.
