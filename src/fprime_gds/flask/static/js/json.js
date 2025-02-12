@@ -28,7 +28,7 @@ class RegExLexer {
         // Null token
         ["NULL", /^null/],
         // NaN token
-        ["NULL", /^null/],
+        ["NAN", /^NaN/],
         // boolean token
         ["BOOLEAN", /^(true)|(false)/],
         // Open object token
@@ -148,7 +148,7 @@ export class SaferParser {
         "number",
         "bigint",
         null
-    ]
+    ];
 
 
     // Store the language variants the first time
@@ -288,7 +288,7 @@ export class SaferParser {
                     let replacement_object = {};
                     replacement_object[SaferParser.CONVERSION_KEY] = token_type;
                     replacement_object["value"] = token_text;
-                    return JSON.stringify(replacement_object)
+                    return SaferParser.language_stringify(replacement_object)
                 }
                 return token_text;
         });
