@@ -9,6 +9,78 @@
 
 
 /**
+ * Lexer for JSON built using JSON
+ */
+class RegExLexer {
+    static TOKEN_EXPRESSIONS = new Map([
+        // String tokens: " then
+        //    any number of:
+        //        not a quote or \
+        //        \ followed by not a quote
+        //        even number of \
+        //        odd number of \ then " (escaped quotation)
+        //    then even number of \ then " (terminating non-escaped ")
+        ["STRING", /^"([^"\\]|(\\[^"\\])|((\\\\)*)|(\\(\\\\)*)")*(?!\\(\\\\)*)"/],
+        // Floating point tokens
+        ["NUMBER", /^-?\d+(\.\d+)?([eE][+-]?\d+)?/],
+        // Infinity token
+        ["INFINITY", /^-?Infinity/],
+        // Null token
+        ["NULL", /^null/],
+        // NaN token
+        ["NULL", /^null/],
+        // boolean token
+        ["BOOLEAN", /^(true)|(false)/],
+        // Open object token
+        ["OPEN_OBJECT", /^\{/],
+        // Close object token
+        ["CLOSE_OBJECT", /^}/],
+        // Field separator token
+        ["FIELD_SEPERATOR", /^,/],
+        // Open list token
+        ["OPEN_ARRAY", /^\[/],
+        // Close a list token
+        ["CLOSE_ARRAY", /^]/],
+        // Key Value Seperator
+        ["VALUE_SEPERATOR", /^:/],
+        // Any amount of whitespace is an implicit token
+        ["WHITESPACE", /^\s+/]
+    ]);
+
+    /**
+     * Tokenize the input string based on JSON tokens.
+     * @param input_string: input string to tokenize
+     * @return {*[]}: list of tokens in-order
+     */
+    static tokenize(original_string) {
+        let tokens = [];
+        let input_string = original_string;
+        // Consume the whole string
+        while (input_string !== "") {
+            let matched_something = false;
+            for (let [token_type, token_matcher] of  RegExLexer.TOKEN_EXPRESSIONS.entries()) {
+                let match = token_matcher.exec(input_string)
+
+                // Token detected
+                if (match != null) {
+                    matched_something = true;
+                    let matched = match[0];
+                    tokens.push([token_type, matched]);
+                    // Consume the string
+                    input_string = input_string.substring(matched.length);
+                    break;
+                }
+            }
+            // Check for no token match
+            if (!matched_something) {
+                throw SyntaxError("Failed to match valid token: '" + input_string.substring(0, 20) + "'...");
+            }
+        }
+        return tokens;
+    }
+}
+
+/**
  * Helper to determine if value is a string
  * @param value: value to check.
  * @return {boolean}: true if string, false otherwise
@@ -27,18 +99,22 @@ function isFunction(value) {
 }
 
 /**
- * Conversion function for converting from string to BigInt or Number depending on size
- * @param {*} string_value: value to convert
- * @returns: Number for small values and BigInt for large values
+ * Convert a string to a number
+ * @param value: value to convert
+ * @return {bigint|number}: number to return
  */
-function convertInt(string_value) {
-    string_value = string_value.trim();
-    let number_value = Number.parseInt(string_value);
-    // When the big and normal numbers match, then return the normal number
-    if (string_value == number_value.toString()) {
-        return number_value;
+function stringToNumber(value) {
+    value = value.trim(); // Should be unnecessary
+    // Process floats (containing . e or E)
+    if (value.search(/[.eE]/) !== -1) {
+        return Number.parseFloat(value);
     }
-    return BigInt(string_value);
+    let number_value = Number.parseInt(value);
+    // When the big and normal numbers match, then return the normal number
+    if (value !== number_value.toString()) {
+        return BigInt(value);
+    }
+    return number_value;
 }
 
 /**
@@ -56,24 +132,23 @@ function convertInt(string_value) {
  * - BigInt
  */
 export class SaferParser {
-    /**
-     * States representing QUOTED or UNQUOTED text
-     * @type {{QUOTED: number, UNQUOTED: number}}
-     */
-    static STATES = {
-        UNQUOTED: 0,
-        QUOTED: 1
-    };
-    /**
-     * List of mapping tuples for clean parsing: string match, replacement type, and real (post parse) type
-     */
-    static MAPPINGS = [
-        [/(-Infinity)/, -Infinity],
-        [/(Infinity)/, Infinity],
-        [/(NaN)/, NaN],
-        [/(null)/, null],
-        [/( -?\d{10,})/, "bigint", convertInt]
-    ];
+    static CONVERSION_KEY = "fprime{replacement";
+
+    static CONVERSION_MAP = new Map([
+        ["INFINITY", (value) => (value[0] === "-") ? -Infinity : Infinity],
+        ["NAN", NaN],
+        ["NULL", null],
+        ["NUMBER", stringToNumber]
+    ]);
+
+    static STRINGIFY_TOKENS = [
+        Infinity,
+        -Infinity,
+        NaN,
+        "number",
+        "bigint",
+        null
+    ]
 
 
     // Store the language variants the first time
@@ -101,7 +176,7 @@ export class SaferParser {
      * @return {{}}: Javascript Object representation of data safely represented in JavaScript types
      */
     static parse(json_string, reviver) {
-        let converted_data = SaferParser.processUnquoted(json_string, SaferParser.replaceFromString);
+        let converted_data = SaferParser.preprocess(json_string);
         // Set up a composite reviver of the one passed in and ours
         let input_reviver = reviver || ((key, value) => value);
         let full_reviver = (key, value) => input_reviver(key, SaferParser.reviver(key, value));
@@ -170,15 +245,17 @@ export class SaferParser {
 
     /**
      * Get replacement object from a JavaScript type
+     * @param _: unused
      * @param value: value to replace
      */
     static replaceFromObject(_, value) {
-        for (let i = 0; i < SaferParser.MAPPINGS.length; i++) {
-            let mapper_type = SaferParser.MAPPINGS[i][1];
-            let mapper_is_string = isString(mapper_type);
-            // Check if the mapping matches the value, if so substitute a replacement object
-            if ((!mapper_is_string && value == mapper_type) || (mapper_is_string && typeof value == mapper_type)) {
-                return {"fprime{replacement": (value == null) ? "null" : value.toString()};
+        for (let i = 0; i < SaferParser.STRINGIFY_TOKENS.length; i++) {
+            let replacer_type = SaferParser.STRINGIFY_TOKENS[i];
+            let mapper_is_string = isString(replacer_type);
+            if ((!mapper_is_string && value === replacer_type) || (mapper_is_string && typeof value === replacer_type)) {
+                let replace_object = {};
+                replace_object[SaferParser.CONVERSION_KEY] = (value == null) ? "null" : value.toString();
+                return replace_object;
             }
         }
         return value;
@@ -194,41 +271,28 @@ export class SaferParser {
      * @return reworked JSON string
      */
     static postReplacer(json_string) {
-        return json_string.replace(/\{\s*"fprime\{replacement"\s*:\s*"([^"]+)"\s*\}/sg, "$1");
-    }
-
-    /**
-     * Replace string occurrences of our gnarly types with a mapping equivalent
-     * @param string_value: value to replace
-     */
-    static replaceFromString(string_value) {
-        for (let i = 0; i < SaferParser.MAPPINGS.length; i++) {
-            let mapper = SaferParser.MAPPINGS[i];
-            string_value = string_value.replace(mapper[0], "{\"fprime{replacement\": \"$1\"}");
-        }
-        return string_value;
+        return json_string.replace(/\{\s*"fprime\{replacement"\s*:\s*"([^"]+)"\s*}/sg, "$1");
     }
 
     /**
      * Apply process function to raw json string only for data that is not qu
-     * @param json_string
-     * @param process_function
+     * @param json_string: JSON string to preprocess
      * @return {string}
      */
-    static processUnquoted(json_string, process_function) {
-        // The initial state of any JSON string is unquoted
-        let state = SaferParser.STATES.UNQUOTED;
-        let unprocessed = json_string;
-        let transformed_data = "";
-
-        while (unprocessed.length > 0) {
-            let next_quote = unprocessed.indexOf("\"");
-            let section = (next_quote !== -1) ? unprocessed.substring(0, next_quote + 1) : unprocessed.substring(0);
-            unprocessed = unprocessed.substring(section.length);
-            transformed_data += (state === SaferParser.STATES.QUOTED) ? section : process_function(section);
-            state = (state === SaferParser.STATES.QUOTED) ? SaferParser.STATES.UNQUOTED : SaferParser.STATES.QUOTED;
-        }
-        return transformed_data;
+    static preprocess(json_string) {
+        const CONVERSION_KEYS = Array.from(SaferParser.CONVERSION_MAP.keys());
+        let tokens = RegExLexer.tokenize(json_string);
+        let converted_text = tokens.map(
+            ([token_type, token_text]) => {
+                if (CONVERSION_KEYS.indexOf(token_type) !== -1) {
+                    let replacement_object = {};
+                    replacement_object[SaferParser.CONVERSION_KEY] = token_type;
+                    replacement_object["value"] = token_text;
+                    return JSON.stringify(replacement_object)
+                }
+                return token_text;
+        });
+        return converted_text.join("");
     }
 
     /**
@@ -239,19 +303,13 @@ export class SaferParser {
      */
     static reviver(key, value) {
         // Look for fprime-replacement and quickly abort if not there
-        let string_value = value["fprime{replacement"];
-        if (typeof string_value === "undefined") {
+        let replacement_type = value[SaferParser.CONVERSION_KEY];
+        if (typeof replacement_type === "undefined") {
             return value;
         }
-        // Run the mappings looking for a match
-        for (let i = 0; i < SaferParser.MAPPINGS.length; i++) {
-            let mapper = SaferParser.MAPPINGS[i];
-            if (mapper[0].test(string_value)) {
-                // Run the conversion function if it exists, otherwise return the mapped constant value
-                return (mapper.length >= 3) ? mapper[2](string_value) : mapper[1];
-            }
-        }
-        return value;
+        let string_value = value["value"];
+        let replacer = SaferParser.CONVERSION_MAP.get(replacement_type);
+        return isFunction(replacer) ? replacer(string_value) : replacer;
     }
 
      /**
