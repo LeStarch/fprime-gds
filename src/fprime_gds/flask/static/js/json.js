@@ -22,7 +22,7 @@ class RegExLexer {
         //    then even number of \ then " (terminating non-escaped ")
         ["STRING", /^"([^"\\]|(\\[^"\\])|((\\\\)*)|(\\(\\\\)*)")*(?!\\(\\\\)*)"/],
         // Floating point tokens
-        ["NUMBER", /^-?\d+(\.\d+)?([eE][+-]?\d+)?/],
+        ["NUMBER", /^-?\d+(\.\d+)?([eE][+\-]?\d+)?/],
         // Infinity token
         ["INFINITY", /^-?Infinity/],
         // Null token
