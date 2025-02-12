@@ -36,13 +36,13 @@ class RegExLexer {
         // Close object token
         ["CLOSE_OBJECT", /^}/],
         // Field separator token
-        ["FIELD_SEPERATOR", /^,/],
+        ["FIELD_SEPARATOR", /^,/],
         // Open list token
         ["OPEN_ARRAY", /^\[/],
         // Close a list token
         ["CLOSE_ARRAY", /^]/],
-        // Key Value Seperator
-        ["VALUE_SEPERATOR", /^:/],
+        // Key Value Separator
+        ["VALUE_SEPARATOR", /^:/],
         // Any amount of whitespace is an implicit token
         ["WHITESPACE", /^\s+/]
     ]);
