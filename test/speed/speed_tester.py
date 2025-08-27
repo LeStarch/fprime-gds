@@ -9,6 +9,7 @@ from fprime_gds.common.pipeline.standard import StandardPipeline
 
 DATA_SIZE = 0
 CHANNELS_PER_ITERATIONS = 100
+CHUNKS_PER_ITERATIION = 10
 
 class NullHistory(DataHandler):
     """A history that does nothing."""
@@ -29,22 +30,25 @@ class NullHistory(DataHandler):
 
 class ChannelCollector(DataHandler):
     """ Channel consumer that collects channel data """
-    def __init__(self, iterations):
+    def __init__(self, iterations, raw):
         self.data_size = 0
         self.channel_count = 0
         self.iterations = iterations
         self.done = False
+        self.raw = raw
 
-    def data_callback(self, channel_data, sender=None):
+    def data_callback(self, data, sender=None):
         """Handle decoded channel data"""
         if self.channel_count == 0:
             self.start = time.perf_counter()
-            self.channel_count += 1
-            return
         
-        self.data_size += DATA_SIZE / CHANNELS_PER_ITERATIONS
+        assert not self.raw or isinstance(data, bytes), "Wrong type " + type(data)
+
+        self.data_size += len(data) if self.raw else DATA_SIZE / CHANNELS_PER_ITERATIONS
         self.channel_count += 1
-        if self.channel_count >= (CHANNELS_PER_ITERATIONS * self.iterations):
+
+        end_bound = self.iterations * CHUNKS_PER_ITERATIION if self.raw else (CHANNELS_PER_ITERATIONS * self.iterations)
+        if self.channel_count >= end_bound:
             self.end()
 
     def is_done(self):
@@ -52,9 +56,11 @@ class ChannelCollector(DataHandler):
 
     def end(self):
         """ End the test """
-        delta = time.perf_counter() - self.start
-        print(f"[{delta:0.3f}] Channel Count: {self.channel_count} ({self.channel_count/delta:0.3f} ch/S) Bandwidth: {self.data_size/delta/1024/1024:0.3f} MiB/S ")
-        self.done = True
+        if not self.done:
+            delta = time.perf_counter() - self.start
+            print(f"[Data Size]: {self.data_size}")
+            print(f"[{delta:0.3f}] Channel Count: {self.channel_count} ({self.channel_count/delta:0.3f} ch/S) Bandwidth: {self.data_size/delta/1024/1024:0.3f} MiB/S ")
+            self.done = True
 
 
 class SpeedTesterParser(ParserBase):
@@ -76,6 +82,11 @@ class SpeedTesterParser(ParserBase):
                 "type": int,
                 "default": 10000,
                 "help": "Number of iterations to run",
+            },
+            ("--raw",): {
+                "action": "store_true",
+                "default": False,
+                "help": "Raw network",
             },
         }
 
@@ -100,7 +111,7 @@ def iteration_test(data, pipeline, max_iterations=0):
 
 def main():
     global DATA_SIZE
-    args, _ = ParserBase.parse_args([StandardPipelineParser, SpeedTesterParser])
+    args, _ = ParserBase.parse_args([StandardPipelineParser, SpeedTesterParser], client=True)
     pipeline = StandardPipeline()
     pipeline.histories.implementation = None
     pipeline = StandardPipelineParser.pipeline_factory(args, pipeline)
@@ -110,8 +121,14 @@ def main():
         pipeline.disconnect()
     
     # Register a consumer
-    channel_collector = ChannelCollector(args.iterations)
+    channel_collector = ChannelCollector(args.iterations, args.raw)
     pipeline.coders.register_channel_consumer(channel_collector)
+
+    if args.raw:
+        print("[INFO] Running RAW calculation")
+        pipeline.client_socket.deregister(pipeline.distributor)
+        pipeline.client_socket.register(channel_collector)
+
 
     with open(args.data_file, "rb") as f:
         data = f.read()
@@ -120,12 +137,13 @@ def main():
         # iterations = fixed_speed_test(data, pipeline)
         if args.remote:
             while not channel_collector.is_done():
-                pass
+                time.sleep(1)
         else:
             iterations = iteration_test(data, pipeline, args.iterations)
     except KeyboardInterrupt:
         pass
-    pipeline.disconnect()
+    if args.remote:
+        pipeline.disconnect()
     channel_collector.end()
 
 

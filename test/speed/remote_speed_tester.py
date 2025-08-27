@@ -29,7 +29,7 @@ class SpeedTesterParser(ParserBase):
                 "type": int,
                 "default": 10000,
                 "help": "Number of iterations to run",
-            },
+            }
         }
 
     def handle_arguments(self, args, **kwargs):
@@ -59,16 +59,18 @@ def fixed_speed_test(data, pipeline):
     return iterations
 
 def iteration_test(data, ground, max_iterations=0):
+    data_size = 0
     iterations = 0
     try:
         while True:
             iterations += 1
+            data_size += sum([len(item) + 4 for item in data])
             ground.send_all(data)
             if iterations == max_iterations:
                 break
     except KeyboardInterrupt:
         pass
-    return iterations
+    return data_size, iterations
 
 
 def deframe_data(all_bytes):
@@ -83,7 +85,7 @@ def deframe_data(all_bytes):
 
 
 def main():
-    args, _ = ParserBase.parse_args([MiddleWareParser, SpeedTesterParser])
+    args, _ = ParserBase.parse_args([MiddleWareParser, SpeedTesterParser], client=True)
 
     # Set up a connection
     if args.zmq:
@@ -95,26 +97,26 @@ def main():
             args.tts_addr, args.tts_port
         )
     ground.open()
-    ground.zmq.connect_outgoing()
+    if args.zmq:
+        ground.zmq.connect_outgoing()
     
 
     with open(args.data_file, "rb") as f:
         data = f.read()
 
+    #frames = deframe_data(data)
     _ = input("[ENTER] To begin")
     start = time.perf_counter()
-
-    frames = deframe_data(data)
-
     try:
         # iterations = fixed_speed_test(data, pipeline)
-        iterations = iteration_test(frames, ground, args.iterations)
+        data_size,iterations = iteration_test([data], ground, args.iterations)
     except KeyboardInterrupt:
         pass
-
+    assert iterations == args.iterations, "Iteration missmatch"
+    print(f"[DATA SIZE] {data_size}")
     delta = time.perf_counter() - start
-    channel_count = CHANNELS_PER_ITERATIONS*iterations
-    print(f"[{delta:0.3f}] Channel Count: {channel_count} ({channel_count/delta:0.3f} ch/S) Bandwidth: {len(data) * iterations/delta/1024/1024:0.3f} MiB/S ")
+    channel_count = CHANNELS_PER_ITERATIONS*args.iterations
+    print(f"[{delta:0.3f}] Channel Count: {channel_count} ({channel_count/delta:0.3f} ch/S) Bandwidth: {len(data) * args.iterations/delta/1024/1024:0.3f} MiB/S ")
 
 if __name__ == '__main__':
     main() 

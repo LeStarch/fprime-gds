@@ -303,4 +303,4 @@ class ZmqGround(GroundHandler):
             size_bytes = struct.pack(
                 ">I", len(packet)
             )  # Add in size bytes as it was stripped in the downlink protocol
-            self.zmq.send(size_bytes + packet)
+            self.zmq.send(packet)
