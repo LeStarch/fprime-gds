@@ -1285,54 +1285,25 @@ class GdsParser(ParserBase):
                 "help": "Run server without auto-launching the default web browser"
                 },
             # WebSocket telemetry stream controls
-            ("--ws", "--stream"): {
-                "dest": "ws_enabled",
-                "action": "store_true",
-                "default": True,
-                "help": (
-                    "Enable the /api/stream WebSocket telemetry route "
-                    "(default). The browser uses it instead of polling "
-                    "/channels and /events for high-rate deployments."
-                ),
-            },
-            ("--no-ws", "--no-stream"): {
+            ("--no-ws",): {
                 "dest": "ws_enabled",
                 "action": "store_false",
+                "default": True,
                 "help": (
                     "Disable the /api/stream WebSocket route. The GDS "
                     "does not register the endpoint and the front-end "
                     "stays on REST polling."
                 ),
             },
-            ("--ws-default-transport",): {
-                "dest": "ws_default_transport",
+            ("--ui-initial-transport",): {
+                "dest": "ui_initial_transport",
                 "choices": ["stream", "poll"],
                 "default": "stream",
                 "type": str,
                 "help": (
-                    "Front-end default transport on first load when no "
-                    "per-browser preference has been persisted. "
+                    "Front-end transport on page load. 'stream' uses "
+                    "the WebSocket push; 'poll' uses REST polling. "
                     "[default: %(default)s]"
-                ),
-            },
-            # Log polling (UI Logs tab + WS logdata snapshot push).
-            # Independent of --disable-data-logging.
-            ("--log-poll",): {
-                "dest": "log_poll_enabled",
-                "action": "store_true",
-                "default": True,
-                "help": (
-                    "Enable the GDS Logs tab polling / WS snapshot push "
-                    "of the available log file list (default)."
-                ),
-            },
-            ("--no-log-poll",): {
-                "dest": "log_poll_enabled",
-                "action": "store_false",
-                "help": (
-                    "Disable the GDS Logs tab polling: the WS no longer "
-                    "pushes logdata snapshots and the front-end Logs tab "
-                    "stays idle. Independent of --disable-data-logging."
                 ),
             },
         }
@@ -1347,7 +1318,7 @@ class GdsParser(ParserBase):
         """
         # --no-ws implies the browser must not consider opening a WebSocket
         if not getattr(args, "ws_enabled", True):
-            args.ws_default_transport = "poll"
+            args.ui_initial_transport = "poll"
         return args
 
 

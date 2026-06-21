@@ -39,15 +39,7 @@ STREAM_QUEUE_DEPTH = int(os.environ.get("FP_STREAM_QUEUE_DEPTH", "1024"))
 STREAM_BATCH_WINDOW_S = float(os.environ.get("FP_STREAM_BATCH_WINDOW_S", "0.028"))
 
 # Default transport advertised to the front-end via /api/stream/status.
-# Accepts "stream" or "poll". The browser picks this up on first load;
-# the Advanced-tab toggle then persists a per-browser choice in
-# localStorage that wins on subsequent loads.
+# Accepts "stream" or "poll". The browser uses this on every page load.
 STREAM_DEFAULT_TRANSPORT = os.environ.get("FP_STREAM_DEFAULT_TRANSPORT", "stream").lower()
-
-# Controls the GDS Logs tab (REST poll + WS ``logdata`` snapshot push).
-# Independent of ``--disable-data-logging`` (the server-side on-disk log
-# writer). When False, the WS PeriodicBroadcaster does not register a
-# ``logdata`` source and the front-end is told log polling is off.
-LOG_POLL_ENABLED = os.environ.get("FP_LOG_POLL_ENABLED", "YES") == "YES"
 
 # TODO: load real config

@@ -18,97 +18,34 @@ class Settings {
          this.polling_intervals = {};
          // Transport for the events/channels/command_history endpoints.
          // "stream" uses a WebSocket push from the GDS (when available),
-         // "poll" uses the legacy REST polling. The advanced settings UI
-         // exposes a live switch backed by this value, and the choice is
-         // persisted to localStorage so it survives reloads.
-         //
-         // Resolution order: persisted localStorage > server default
-         // (set later via ``applyServerDefaultTransport``) > config default.
-         // The persisted flag is recorded so a later server-default does
-         // not stomp a user's per-browser choice.
+         // "poll" uses the legacy REST polling. Controlled by the server's
+         // --ui-initial-transport flag and applied on each page load via
+         // applyServerDefaultTransport().
          this.transport = {
-             mode: (config.defaultTransport === "poll") ? "poll" : "stream",
-             userPersisted: false,
+             mode: "stream",
          };
-         try {
-             let persisted = window.localStorage.getItem("fprime-gds-transport");
-             if (persisted === "stream" || persisted === "poll") {
-                 this.transport.mode = persisted;
-                 this.transport.userPersisted = true;
-             }
-         } catch (e) { /* localStorage unavailable; ignore */ }
-
-         // GDS Logs tab polling toggle (REST /logdata poll + WS logdata
-         // snapshot push). Independent of the disk data logger.
-         // Resolution order: persisted localStorage > server default
-         // (set later via ``applyServerLogPolling``) > on. The persisted
-         // flag is recorded so a later server-default does not stomp a
-         // user's per-browser choice.
-         this.logPolling = {
-             enabled: true,
-             userPersisted: false,
-         };
-         try {
-             let persisted = window.localStorage.getItem("fprime-gds-log-polling");
-             if (persisted === "on" || persisted === "off") {
-                 this.logPolling.enabled = (persisted === "on");
-                 this.logPolling.userPersisted = true;
-             }
-         } catch (e) { /* localStorage unavailable; ignore */ }
     }
 
     /**
-     * Apply a server-provided default transport. Only takes effect when no
-     * per-browser choice has been persisted; this lets a CLI flag
-     * (``--ws-default-transport poll``) ship a poll-first first-load
-     * experience without overriding a user's prior toggle.
+     * Apply the server-provided default transport on page load. Called
+     * after probing /api/stream/status so the CLI flag
+     * (--ui-initial-transport) controls the browser's transport each
+     * time.
      */
     applyServerDefaultTransport(mode) {
-         if ((mode !== "stream" && mode !== "poll") || this.transport.userPersisted) {
-             return;
+         if (mode === "stream" || mode === "poll") {
+             this.transport.mode = mode;
          }
-         this.transport.mode = mode;
     }
 
     /**
-     * Apply a server-provided default for log polling. Only takes
-     * effect when no per-browser choice has been persisted; lets
-     * ``--no-log-poll`` ship a deployment where the Logs tab is
-     * idle by default without overriding a user's prior toggle.
-     */
-    applyServerLogPolling(enabled) {
-         if (typeof enabled !== "boolean" || this.logPolling.userPersisted) {
-             return;
-         }
-         this.logPolling.enabled = enabled;
-    }
-
-    /**
-     * Persist the log polling choice. Intended to be called by the UI live switch.
-     */
-    setLogPolling(enabled) {
-         let normalized = !!enabled;
-         this.logPolling.enabled = normalized;
-         this.logPolling.userPersisted = true;
-         try {
-             window.localStorage.setItem(
-                 "fprime-gds-log-polling", normalized ? "on" : "off"
-             );
-         } catch (e) { /* ignore */ }
-    }
-
-    /**
-     * Persist the transport choice. Intended to be called by the UI live switch.
+     * Set the transport mode. Called by the Advanced Settings dropdown.
      */
     setTransport(mode) {
          if (mode !== "stream" && mode !== "poll") {
              return;
          }
          this.transport.mode = mode;
-         this.transport.userPersisted = true;
-         try {
-             window.localStorage.setItem("fprime-gds-transport", mode);
-         } catch (e) { /* ignore */ }
     }
 
     /**

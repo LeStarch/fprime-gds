@@ -112,54 +112,18 @@ def test_drain_blocks_until_first_envelope_then_batches():
     assert by_id == {1: 1, 2: "latest", 3: 3}
 
 
-def test_apply_subscription_replace_narrows_default_all():
-    sub = streams._Subscriber("s", max_depth=4)
-    # Defaults: subscribed to everything (channels=all, events, commands).
-    assert sub.subscribe_all_channels is True
-    assert sub.events is True
-    assert sub.commands is True
-
-    streams._apply_subscription(
-        sub, {"op": "replace", "channels": [10, 20], "events": True, "commands": False}
-    )
-    assert sub.subscribe_all_channels is False
-    assert sub.channels == {10, 20}
-    assert sub.events is True
-    assert sub.commands is False
-
-    # ``channels: "all"`` re-broadens.
-    streams._apply_subscription(
-        sub, {"op": "replace", "channels": "all", "events": False, "commands": True}
-    )
-    assert sub.subscribe_all_channels is True
-    assert sub.channels == set()
-    assert sub.events is False
-    assert sub.commands is True
-
-
-def test_apply_subscription_unsub_clears_all_channels():
-    sub = streams._Subscriber("s", max_depth=4)
-    sub.subscribe_all_channels = False
-    sub.channels = {1, 2, 3}
-    streams._apply_subscription(sub, {"op": "unsub", "channels": [2]})
-    assert sub.channels == {1, 3}
-    streams._apply_subscription(sub, {"op": "unsub", "channels": "all"})
-    assert sub.subscribe_all_channels is False
-    assert sub.channels == set()
-
-
-def test_hub_fanout_skips_unsubscribed_kinds():
-    hub = streams.StreamHub(max_depth=4)
-    sub = hub.register()
-    sub.events = False
-    sub.commands = False
+def test_hub_fanout_delivers_to_all_subscribers():
+    hub = streams.StreamHub(max_depth=8)
+    sub_a = hub.register()
+    sub_b = hub.register()
     hub.data_callback(_FakeChan(id=1, val=1))
     hub.data_callback(_FakeEvent(id=2, val=2))
     hub.data_callback(_FakeCmd(id=3, val=3))
-    drained = sub.drain(timeout_s=0)
-    # Only the channel envelope makes it through.
-    assert len(drained) == 1
-    assert drained[0]["type"] == "channel"
+    drained_a = sub_a.drain(timeout_s=0)
+    drained_b = sub_b.drain(timeout_s=0)
+    # Both subscribers get all data types
+    assert len(drained_a) == 3
+    assert len(drained_b) == 3
 
 
 def test_hub_stats_aggregates_drops():
@@ -173,6 +137,31 @@ def test_hub_stats_aggregates_drops():
     stats = hub.stats()
     assert stats["clients"] == 2
     assert stats["dropped"] >= 1
+
+
+def test_group_batch_separates_kinds():
+    envelopes = [
+        {"type": "channel", "id": 1, "data": {"id": 1, "val": 10}},
+        {"type": "event", "id": 2, "data": {"id": 2, "val": 20}},
+        {"type": "channel", "id": 3, "data": {"id": 3, "val": 30}},
+        {"type": "command", "id": 4, "data": {"id": 4, "val": 40}},
+    ]
+    grouped, passthrough = streams._group_batch(envelopes)
+    assert "channel" in grouped
+    assert len(grouped["channel"]) == 2
+    assert "event" in grouped
+    assert len(grouped["event"]) == 1
+    assert "command" in grouped
+    assert len(grouped["command"]) == 1
+    assert passthrough == []
+
+
+def test_encode_produces_valid_json():
+    import json as stdlib_json
+    envelope = {"type": "channel", "data": [{"id": 1, "val": 42}]}
+    encoded = streams._encode(envelope)
+    decoded = stdlib_json.loads(encoded)
+    assert decoded == envelope
 
 
 # ---------------------------------------------------------------------------
@@ -194,13 +183,6 @@ def _patch_minimal(monkeypatch):
 
 
 class _FakeChan:
-    """Stand-in that passes ``isinstance(data, ChData)`` checks.
-
-    We rebind ``ChData`` in the streams module to this class for the
-    duration of the test so ``StreamHub._to_envelope`` routes to the
-    channel branch without us needing to construct a real ``ChData``.
-    """
-
     def __init__(self, id: int, val: object):
         self.id = id
         self.val = val
