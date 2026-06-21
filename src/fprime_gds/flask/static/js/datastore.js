@@ -286,9 +286,14 @@ class DataStore {
         // Setup initial commands data (clearing arguments and setting initial values)
         Object.values(_datastore.commands).forEach((command) => command.args.forEach(this.setupCommandArgument.bind(this)));
         this.flags.loaded = true;
+        // Start non-streamed pollers immediately (logdata, upfiles, downfiles, stats).
+        this.polling_info.filter((item) => !STREAMED_ENDPOINTS.has(item.endpoint)).forEach((item) => {
+            this.reregisterPoller(item.endpoint);
+        });
+        // Defer streamed endpoints until the stream probe completes.
         this._probeStreamAvailability().then(() => {
             this._buildStreamHandlers();
-            this.polling_info.forEach((item) => {
+            this.polling_info.filter((item) => STREAMED_ENDPOINTS.has(item.endpoint)).forEach((item) => {
                 this.reregisterPoller(item.endpoint);
             });
         });
