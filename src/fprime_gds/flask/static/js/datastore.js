@@ -12,7 +12,47 @@ import {_validator} from "./validate.js";
 import {_settings} from "./settings.js";
 import {_loader} from "./loader.js";
 import {_performance} from "./performance.js";
+import {StreamClient} from "./stream.js";
 import {timeToDate} from "./vue-support/utils.js";
+
+// Endpoints that the WebSocket stream covers. Anything not in this set keeps
+// polling the REST API regardless of transport mode. All data-bearing
+// endpoints land here so that an open WS is the single data source for the
+// front-end -- the REST poll layer is left idle while the stream is up.
+//
+// The high-rate kinds (channels/events/command_history) ride the F Prime
+// pipeline directly; the snapshot kinds (logdata/upfiles/downfiles/stats)
+// are pushed by the server's PeriodicBroadcaster on a 1 Hz timer in REST
+// response shape.
+const HIGH_RATE_STREAMED_ENDPOINTS = new Set([
+    "channels", "events", "command_history",
+]);
+const SNAPSHOT_STREAMED_ENDPOINTS = new Set([
+    "logdata", "upfiles", "downfiles", "stats",
+]);
+const STREAMED_ENDPOINTS = new Set([
+    ...HIGH_RATE_STREAMED_ENDPOINTS,
+    ...SNAPSHOT_STREAMED_ENDPOINTS,
+]);
+
+// REST-poll response unwrap: the poller in loader.js peels the body before
+// handing it to the registered callback as ``(items, errors)``. Snapshot
+// envelopes carry the same body shape, so we apply the same unwrap before
+// dispatching to the processor.
+function _unwrapRestPayload(payload) {
+    if (payload == null) {
+        return [payload, []];
+    }
+    if (typeof payload === "object" && !Array.isArray(payload)) {
+        let items = ("history" in payload) ? payload.history
+            : ("files" in payload) ? payload.files
+            : ("logs" in payload) ? payload.logs
+            : payload;
+        let errors = Array.isArray(payload.errors) ? payload.errors : [];
+        return [items, errors];
+    }
+    return [payload, []];
+}
 
 /**
  * HistoryHelper: base class used to help process incoming histories into the supplied stores. Processing results from
@@ -236,6 +276,10 @@ class DataStore {
 
         let polling_keys = this.polling_info.map((item) => { return item.endpoint; });
         _settings.setupPollingSettings(polling_keys);
+
+        this._stream = null;
+        this._streamHandlers = {};
+        this._streamAvailable = null;  // null = unknown; true/false after probe
     }
 
     /**
@@ -274,9 +318,164 @@ class DataStore {
         // Setup initial commands data (clearing arguments and setting initial values)
         Object.values(_datastore.commands).forEach((command) => command.args.forEach(this.setupCommandArgument.bind(this)));
         this.flags.loaded = true;
-        this.polling_info.forEach((item) => {
-            this.reregisterPoller(item.endpoint);
+        this._probeStreamAvailability().then(() => {
+            // Rebuild after the probe so the server-side log poll
+            // default has been folded into ``_settings.logPolling``
+            // before the StreamClient (created in applyTransport via
+            // reregisterPoller) reads ``_streamHandlers``.
+            this._buildStreamHandlers();
+            this.polling_info.forEach((item) => {
+                this.reregisterPoller(item.endpoint);
+            });
         });
+    }
+
+    /**
+     * Probe whether the WebSocket stream route is available on this GDS, and
+     * read the server-side default transport. The probe is best-effort: a
+     * missing endpoint is interpreted as "not available" and falls the
+     * datastore back to polling.
+     */
+    _probeStreamAvailability() {
+        return new Promise((resolve) => {
+            fetch("/api/stream/status")
+                .then((response) => response.ok ? response.json() : null)
+                .then((data) => {
+                    this._streamAvailable = !!(data && data.active);
+                    if (data && typeof data.default_transport === "string") {
+                        _settings.applyServerDefaultTransport(data.default_transport);
+                    }
+                    if (data && typeof data.log_poll_enabled === "boolean") {
+                        _settings.applyServerLogPolling(data.log_poll_enabled);
+                    }
+                    resolve();
+                })
+                .catch(() => {
+                    this._streamAvailable = false;
+                    resolve();
+                });
+        });
+    }
+
+    /**
+     * Build a wrapped processor for a given polling-info entry. Shared by
+     * the streaming and polling paths so the event severity counter and
+     * error wrapping stay in lockstep across transports.
+     *
+     * @param item {endpoint, handler} entry from this.polling_info
+     * @returns processor function with signature (items, errors)
+     */
+    _buildProcessor(item) {
+        let bound = (item.handler instanceof HistoryHelper)
+            ? item.handler.update.bind(item.handler)
+            : item.handler.bind(this);
+        let processor = _validator.wrapResponseHandler(item.endpoint, bound);
+        if (item.endpoint === "events") {
+            let severity_processor = (severity) => severity.value.replace("EventSeverity.", "");
+            processor = _validator.wrapFieldCounter(
+                "severity",
+                processor,
+                severity_processor,
+                Object.fromEntries(Object.keys(config.summaryFields).map((field_key) => [field_key, 0]))
+            );
+        }
+        return processor;
+    }
+
+    _buildStreamHandlers() {
+        let handlers = {};
+        for (let item of this.polling_info) {
+            if (!STREAMED_ENDPOINTS.has(item.endpoint)) {
+                continue;
+            }
+            // The logdata snapshot is gated on the front-end's log-
+            // polling toggle. When disabled, drop the handler
+            // entirely so the StreamClient ignores the envelope --
+            // saves a JSON.parse-worth of work per snapshot tick.
+            if (item.endpoint === "logdata" && !this.logPollingEnabled()) {
+                continue;
+            }
+            let processor = this._buildProcessor(item);
+            if (HIGH_RATE_STREAMED_ENDPOINTS.has(item.endpoint)) {
+                // High-rate stream handlers receive an array of items per
+                // batched envelope; wrap to match the (items, errors)
+                // signature used by the REST poller's callback.
+                handlers[item.endpoint] = (items) => processor(items, []);
+            } else {
+                // Snapshot stream handlers receive the unwrapped REST
+                // response shape; apply the same body unwrap the poller
+                // does before dispatching to the processor.
+                handlers[item.endpoint] = (payload) => {
+                    let [items, errors] = _unwrapRestPayload(payload);
+                    processor(items, errors);
+                };
+            }
+        }
+        this._streamHandlers = handlers;
+    }
+
+    /**
+     * Returns true when the front-end is currently interested in GDS
+     * Logs tab data (REST poll + WS ``logdata`` snapshot push).
+     */
+    logPollingEnabled() {
+        return !!(_settings.logPolling && _settings.logPolling.enabled);
+    }
+
+    /**
+     * Apply a live log-polling toggle: rebuild the stream handler
+     * map (so an active WS client drops/picks up ``logdata``
+     * snapshots immediately) and stop/restart the /logdata REST
+     * poller. Called by the Advanced settings tab when the
+     * checkbox is flipped.
+     */
+    applyLogPolling() {
+        this._buildStreamHandlers();
+        if (this._stream) {
+            this._stream.setHandlers(this._streamHandlers);
+        }
+        if (this.streamActive()) {
+            // Stream mode: REST poll is already stopped for all
+            // streamed endpoints. Nothing more to do.
+            return;
+        }
+        if (this.logPollingEnabled()) {
+            this.reregisterPoller("logdata");
+        } else {
+            _loader.stopPoller("logdata");
+        }
+    }
+
+    /**
+     * Returns true when the streaming transport should be in use.
+     */
+    streamActive() {
+        return _settings.transport.mode === "stream" && this._streamAvailable === true;
+    }
+
+    /**
+     * Spin up (or tear down) the stream client and toggle which endpoints
+     * are polled vs pushed. Safe to call repeatedly; only the delta is acted
+     * on.
+     */
+    applyTransport() {
+        if (this.streamActive()) {
+            if (!this._stream) {
+                this._stream = new StreamClient(null, this._streamHandlers);
+                this._stream.start();
+            }
+            for (let key of STREAMED_ENDPOINTS) {
+                _loader.stopPoller(key);
+            }
+        } else {
+            if (this._stream) {
+                this._stream.stop();
+                this._stream = null;
+            }
+            for (let key of STREAMED_ENDPOINTS) {
+                this.reregisterPoller(key);
+            }
+        }
     }
 
     /**
@@ -352,21 +551,22 @@ class DataStore {
      * @param endpoint: name of the endpoint to start polling
      */
     reregisterPoller(endpoint) {
-        let handler = ((this.polling_info.filter((item) => item.endpoint === endpoint)[0]) || {}).handler;
-        if (handler && _settings.polling_intervals[endpoint] > -1) {
-            let bound = (handler instanceof HistoryHelper) ? handler.update.bind(handler) : handler.bind(this);
-            let processor = _validator.wrapResponseHandler(endpoint, bound);
-            if (endpoint === "events") {
-                let severity_processor = (severity) => {
-                    return severity.value.replace("EventSeverity.", "");
-                };
-                processor = _validator.wrapFieldCounter(
-                    "severity",
-                    processor,
-                    severity_processor,
-                    Object.fromEntries(Object.keys(config.summaryFields).map((field_key) => [field_key, 0]))
-                );
-            }
+        // Skip polling for endpoints served by the WebSocket stream when it's active.
+        if (STREAMED_ENDPOINTS.has(endpoint) && this.streamActive()) {
+            // Make sure the stream is running and any stale poller is torn down.
+            _loader.stopPoller(endpoint);
+            this.applyTransport();
+            return;
+        }
+        // GDS Logs tab toggle: when the front-end is not interested in
+        // logs, leave the /logdata REST poller idle in poll mode.
+        if (endpoint === "logdata" && !this.logPollingEnabled()) {
+            _loader.stopPoller(endpoint);
+            return;
+        }
+        let item = this.polling_info.filter((entry) => entry.endpoint === endpoint)[0];
+        if (item && _settings.polling_intervals[endpoint] > -1) {
+            let processor = this._buildProcessor(item);
             let error_fn = _validator.getErrorHandler();
             _loader.registerPoller(endpoint, processor, error_fn, _settings.polling_intervals[endpoint]);
         }

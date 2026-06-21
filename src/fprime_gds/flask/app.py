@@ -28,6 +28,7 @@ import fprime_gds.flask.json
 import fprime_gds.flask.logs
 import fprime_gds.flask.sequence
 import fprime_gds.flask.stats
+import fprime_gds.flask.streams
 import fprime_gds.flask.updown
 from fprime_gds.executables.cli import ParserBase, StandardPipelineParser, ConfigDrivenParser
 
@@ -182,6 +183,76 @@ def construct_app():
             "/logdata/<name>",
             resource_class_args=[args_ns.logs],
         )
+
+    # WebSocket telemetry stream. Registered conditionally on flask-sock
+    # being installed and STREAM_ENABLED being True. When unavailable the
+    # front-end falls back to REST polling automatically.
+    hub = fprime_gds.flask.streams.StreamHub(
+        max_depth=int(app.config.get(
+            "STREAM_QUEUE_DEPTH",
+            fprime_gds.flask.streams.DEFAULT_QUEUE_DEPTH,
+        ))
+    )
+    hub.attach_to_pipeline(pipeline)
+    app.config["STREAM_ACTIVE"] = fprime_gds.flask.streams.register_stream_routes(app, hub)
+
+    # When the WebSocket is active, push snapshot endpoints (logdata,
+    # file lists, stats) over the same connection so the front-end can
+    # stop all data-bearing REST polls while the stream is up.
+    if app.config["STREAM_ACTIVE"]:
+        stats_resource = fprime_gds.flask.stats.StatsBlob({
+            "events": pipeline.histories.events,
+            "channels": pipeline.histories.channels,
+            "commands": pipeline.histories.commands,
+        })
+        upfiles_resource = fprime_gds.flask.updown.FileUploads(
+            pipeline.files.uplinker, pipeline.up_store
+        )
+        downfiles_resource = fprime_gds.flask.updown.FileDownload(
+            pipeline.files.downlinker
+        )
+        sources = {
+            fprime_gds.flask.streams.KIND_STATS: stats_resource.get,
+            fprime_gds.flask.streams.KIND_UPFILES: upfiles_resource.get,
+            fprime_gds.flask.streams.KIND_DOWNFILES: downfiles_resource.get,
+        }
+        if app.config["SERVE_LOGS"] and app.config.get("LOG_POLL_ENABLED", True):
+            logs_resource = fprime_gds.flask.logs.LogList(args_ns.logs)
+            sources[fprime_gds.flask.streams.KIND_LOGDATA] = logs_resource.get
+        broadcaster = fprime_gds.flask.streams.PeriodicBroadcaster(
+            hub,
+            sources,
+            interval_s=float(app.config.get(
+                "STREAM_BROADCAST_INTERVAL_S",
+                fprime_gds.flask.streams.DEFAULT_BROADCAST_INTERVAL_S,
+            )),
+        )
+        broadcaster.start()
+        app.config["STREAM_BROADCASTER"] = broadcaster
+
+    @app.route("/api/stream/status")
+    def _stream_status():
+        default_transport = str(
+            app.config.get("STREAM_DEFAULT_TRANSPORT", "stream")
+        ).lower()
+        if not app.config.get("STREAM_ACTIVE", False):
+            default_transport = "poll"
+        return {
+            "enabled": bool(app.config.get("STREAM_ENABLED", True)),
+            "active": bool(app.config.get("STREAM_ACTIVE", False)),
+            "queue_depth": int(app.config.get(
+                "STREAM_QUEUE_DEPTH",
+                fprime_gds.flask.streams.DEFAULT_QUEUE_DEPTH,
+            )),
+            "batch_window_s": float(app.config.get(
+                "STREAM_BATCH_WINDOW_S",
+                fprime_gds.flask.streams.DEFAULT_BATCH_WINDOW_S,
+            )),
+            "default_transport": default_transport,
+            "log_poll_enabled": bool(app.config.get("LOG_POLL_ENABLED", True)),
+            **hub.stats(),
+        }
+
     return app, api
 
 
