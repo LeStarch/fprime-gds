@@ -193,8 +193,9 @@ def construct_app():
             fprime_gds.flask.streams.DEFAULT_QUEUE_DEPTH,
         ))
     )
-    hub.attach_to_pipeline(pipeline)
     app.config["STREAM_ACTIVE"] = fprime_gds.flask.streams.register_stream_routes(app, hub)
+    if app.config["STREAM_ACTIVE"]:
+        hub.attach_to_pipeline(pipeline)
 
     # When the WebSocket is active, push snapshot endpoints (logdata,
     # file lists, stats) over the same connection so the front-end can

@@ -274,10 +274,7 @@ class _Subscriber:
         Caller must hold ``self._outbox_cv``.
         """
         if len(self._outbox) >= self._max_depth:
-            try:
-                self._outbox.popleft()
-            except IndexError:
-                pass
+            self._outbox.popleft()
             self.dropped += 1
         self._outbox.append(envelope)
 
@@ -643,14 +640,17 @@ class _StreamSession:
             name=f"fprime-gds-stream-sender-{self._sub.id[:8]}",
             daemon=True,
         )
+        started = False
         try:
             self._send({"type": KIND_HELLO, "subscriber_id": self._sub.id})
             thread.start()
+            started = True
             self._receiver_loop()
         finally:
             self._stop.set()
             self._hub.unregister(self._sub)
-            thread.join(timeout=1.0)
+            if started:
+                thread.join(timeout=1.0)
 
     # ------------------------------------------------------------------
     # Threads
