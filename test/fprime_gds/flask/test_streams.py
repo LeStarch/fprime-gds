@@ -121,9 +121,14 @@ def test_hub_fanout_delivers_to_all_subscribers():
     hub.data_callback(_FakeCmd(id=3, val=3))
     drained_a = sub_a.drain(timeout_s=0)
     drained_b = sub_b.drain(timeout_s=0)
-    # Both subscribers get all data types
-    assert len(drained_a) == 3
-    assert len(drained_b) == 3
+    # Both subscribers receive identical data with correct types and payloads
+    for drained in (drained_a, drained_b):
+        assert len(drained) == 3
+        by_type = {env["type"]: env for env in drained}
+        assert set(by_type.keys()) == {"channel", "event", "command"}
+        assert by_type["channel"]["data"] == {"id": 1, "val": 1}
+        assert by_type["event"]["data"] == {"id": 2, "val": 2}
+        assert by_type["command"]["data"] == {"id": 3, "val": 3}
 
 
 def test_hub_stats_aggregates_drops():
@@ -131,12 +136,30 @@ def test_hub_stats_aggregates_drops():
     sub_a = hub.register()
     sub_b = hub.register()
     # Force drops on the event path of both subscribers.
+    # Depth=2 means 5 events -> 3 dropped per subscriber, 6 total.
     for i in range(5):
         sub_a.enqueue(_event(i))
         sub_b.enqueue(_event(i))
     stats = hub.stats()
     assert stats["clients"] == 2
-    assert stats["dropped"] >= 1
+    assert stats["dropped"] == 6
+
+
+def test_hub_rejects_beyond_max_subscribers():
+    hub = streams.StreamHub(max_depth=4)
+    subs = []
+    for _ in range(streams.MAX_SUBSCRIBERS):
+        sub = hub.register()
+        assert sub is not None
+        subs.append(sub)
+    # Next registration is rejected
+    assert hub.register() is None
+    assert hub.stats()["clients"] == streams.MAX_SUBSCRIBERS
+    # Freeing one slot allows a new subscriber
+    hub.unregister(subs.pop())
+    sub = hub.register()
+    assert sub is not None
+    assert hub.stats()["clients"] == streams.MAX_SUBSCRIBERS
 
 
 def test_group_batch_separates_kinds():

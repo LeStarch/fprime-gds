@@ -74,6 +74,12 @@ _BATCHABLE_KINDS = (KIND_CHANNEL, KIND_EVENT, KIND_COMMAND)
 DEFAULT_QUEUE_DEPTH = 1024
 """Default per-client outbox depth (in messages)."""
 
+MAX_SUBSCRIBERS = 16
+"""Maximum concurrent WebSocket subscribers. New connections beyond this
+limit are rejected with a 503 (Service Unavailable) error envelope and
+immediate close. This bounds total thread allocation (2 threads per client)
+and prevents a network peer from exhausting GDS resources."""
+
 DEFAULT_DRAIN_TIMEOUT_S = 0.05
 """Wait timeout for the sender thread between drains."""
 
@@ -226,9 +232,12 @@ class StreamHub(DataHandler):
     # ------------------------------------------------------------------
     # Subscriber lifecycle
     # ------------------------------------------------------------------
-    def register(self, max_depth: Optional[int] = None) -> _Subscriber:
-        sub = _Subscriber(str(uuid.uuid4()), max_depth or self._max_depth)
+    def register(self, max_depth: Optional[int] = None) -> Optional[_Subscriber]:
+        """Create and return a new subscriber, or ``None`` if the limit is reached."""
         with self._lock:
+            if len(self._subscribers) >= MAX_SUBSCRIBERS:
+                return None
+            sub = _Subscriber(str(uuid.uuid4()), max_depth or self._max_depth)
             self._subscribers[sub.id] = sub
         return sub
 
@@ -350,11 +359,14 @@ class _StreamSession:
         self._drain_timeout = drain_timeout
         self._batch_window = batch_window
         self._receive_timeout = receive_timeout
-        self._sub = hub.register(max_depth=max_depth)
+        self._sub: Optional[_Subscriber] = hub.register(max_depth=max_depth)
         self._ws_lock = threading.Lock()
         self._stop = threading.Event()
 
     def run(self) -> None:
+        if self._sub is None:
+            self._send({"type": KIND_ERROR, "reason": "max_subscribers_reached"})
+            return
         thread = threading.Thread(
             target=self._sender_loop,
             name=f"fprime-gds-stream-sender-{self._sub.id[:8]}",
