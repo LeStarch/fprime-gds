@@ -166,7 +166,7 @@ class StreamClient {
                 break;
             case ENVELOPE_TYPE_ERROR:
                 this._counters.errors += 1;
-                console.warn("[stream] server reported error:", envelope.message);
+                console.warn("[stream] server reported error:", envelope.reason);
                 break;
             default:
                 break;
