@@ -16,6 +16,36 @@ class Settings {
             channels_display_last_received: true
          };
          this.polling_intervals = {};
+         // Transport for the events/channels/command_history endpoints.
+         // "stream" uses a WebSocket push from the GDS (when available),
+         // "poll" uses the legacy REST polling. Controlled by the server's
+         // --ui-initial-transport flag and applied on each page load via
+         // applyServerDefaultTransport().
+         this.transport = {
+             mode: "stream",
+         };
+    }
+
+    /**
+     * Apply the server-provided default transport on page load. Called
+     * after probing /api/stream/status so the CLI flag
+     * (--ui-initial-transport) controls the browser's transport each
+     * time.
+     */
+    applyServerDefaultTransport(mode) {
+         if (mode === "stream" || mode === "poll") {
+             this.transport.mode = mode;
+         }
+    }
+
+    /**
+     * Set the transport mode. Called by the Advanced Settings dropdown.
+     */
+    setTransport(mode) {
+         if (mode !== "stream" && mode !== "poll") {
+             return;
+         }
+         this.transport.mode = mode;
     }
 
     /**

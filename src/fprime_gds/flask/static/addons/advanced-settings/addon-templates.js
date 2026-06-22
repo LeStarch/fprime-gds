@@ -5,6 +5,39 @@ export let advanced_template = `
         <p>This page provides advanced settings for controlling the GDS and statistics for introspecting performance.
         Most users can use the standard settings and need not change what is seen here. Change with caution.</p>
         <div class="row">
+            <div class="col-12">
+                <h3>Data Transport</h3>
+                <p>
+                    Select how the browser receives channels, events, and command history updates.
+                    <strong>Stream</strong> opens a WebSocket to <code>/api/stream</code> and receives push updates
+                    as the GDS decodes them (recommended for high-rate deployments).
+                    <strong>Poll</strong> falls back to periodic REST polling of <code>/channels</code>,
+                    <code>/events</code>, and <code>/commands</code>.
+                </p>
+                <div class="input-group mb-3">
+                    <div class="input-group-prepend col-3">
+                        <span class="input-group-text col-12">Transport</span>
+                    </div>
+                    <select class="form-control col-3"
+                            :value="transport.mode"
+                            @change="onTransportChange">
+                        <option value="stream" :disabled="stream_status.active === false">
+                            Stream (WebSocket push)
+                        </option>
+                        <option value="poll">Poll (REST)</option>
+                    </select>
+                    <small class="ml-3 align-self-center">
+                        <strong>Server status:</strong>
+                        <span v-if="stream_status.active === null">probing\u2026</span>
+                        <span v-else-if="stream_status.active">stream available
+                            ({{ stream_status.clients }} client(s),
+                            {{ stream_status.dropped }} dropped,
+                            {{ Math.round((stream_status.batch_window_s || 0) * 1000) }} ms batch)</span>
+                        <span v-else>stream disabled at startup; using REST polling
+                            (re-run the GDS without <code>--no-ws</code> to enable)</span>
+                    </small>
+                </div>
+            </div>
             <div class="col-4" v-for="setting_category in Object.keys(settings)">
                 <h3>{{ setting_category.replace("_", " ") }}</h3>
                 <div v-html="settings[setting_category].description"></div>

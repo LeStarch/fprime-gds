@@ -32,6 +32,32 @@ All of these objects are created and registered to other objects when the GDS
 is initialized. Thus, all of the structure of the GDS is created in one place,
 and can be easily modified.
 
+### WebSocket Streaming Transport
+
+In addition to the REST polling path, the GDS provides an optional WebSocket
+push channel at `/api/stream` (module: `src/fprime_gds/flask/streams.py`). When
+enabled, channels, events, and command history are pushed to the browser over a
+persistent connection rather than polled on timers. This is the preferred
+transport for high-rate deployments where per-poll serialization and JSON parsing
+become a bottleneck.
+
+The `StreamHub` class registers as a consumer on the same decoder outputs used
+by the REST endpoints. Decoded samples are fanned out to per-client subscriber
+outboxes. Channel samples are coalesced per id (latest wins), bounding memory by
+the number of unique channel ids rather than the incoming rate. A configurable
+batch window (default 28 ms ≈ one F Prime frame at 35 Hz) coalesces samples into
+a single `ws.send` per kind per window.
+
+**CLI flags:**
+
+| Flag | Effect |
+|---|---|
+| `--no-ws` | Disable `/api/stream` entirely; browser stays on REST polling |
+| `--ui-initial-transport {stream,poll}` | Set the browser's first-load transport preference |
+
+Slow-rate data (log files, upload/download status, system stats) continues to be
+served via REST polling regardless of WebSocket mode.
+
 ## GDS Tools
 The GDS was designed to have flexible configurations of consumers for its various data decoders.
 This has been used to support several additional tools.

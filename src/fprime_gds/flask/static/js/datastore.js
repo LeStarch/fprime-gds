@@ -12,7 +12,15 @@ import {_validator} from "./validate.js";
 import {_settings} from "./settings.js";
 import {_loader} from "./loader.js";
 import {_performance} from "./performance.js";
+import {StreamClient} from "./stream.js";
 import {timeToDate} from "./vue-support/utils.js";
+
+// Endpoints served by the WebSocket stream when active. Only the high-rate
+// data-bearing endpoints are streamed; low-rate metadata (logdata, upfiles,
+// downfiles, stats) continues to poll REST regardless of transport mode.
+const STREAMED_ENDPOINTS = new Set([
+    "channels", "events", "command_history",
+]);
 
 /**
  * HistoryHelper: base class used to help process incoming histories into the supplied stores. Processing results from
@@ -236,6 +244,10 @@ class DataStore {
 
         let polling_keys = this.polling_info.map((item) => { return item.endpoint; });
         _settings.setupPollingSettings(polling_keys);
+
+        this._stream = null;
+        this._streamHandlers = {};
+        this._streamAvailable = null;  // null = unknown; true/false after probe
     }
 
     /**
@@ -274,9 +286,113 @@ class DataStore {
         // Setup initial commands data (clearing arguments and setting initial values)
         Object.values(_datastore.commands).forEach((command) => command.args.forEach(this.setupCommandArgument.bind(this)));
         this.flags.loaded = true;
-        this.polling_info.forEach((item) => {
+        // Start non-streamed pollers immediately (logdata, upfiles, downfiles, stats).
+        this.polling_info.filter((item) => !STREAMED_ENDPOINTS.has(item.endpoint)).forEach((item) => {
             this.reregisterPoller(item.endpoint);
         });
+        // Defer streamed endpoints until the stream probe completes.
+        this._probeStreamAvailability().then(() => {
+            this._buildStreamHandlers();
+            this.polling_info.filter((item) => STREAMED_ENDPOINTS.has(item.endpoint)).forEach((item) => {
+                this.reregisterPoller(item.endpoint);
+            });
+        });
+    }
+
+    /**
+     * Probe whether the WebSocket stream route is available on this GDS, and
+     * read the server-side default transport. The probe is best-effort: a
+     * missing endpoint is interpreted as "not available" and the datastore
+     * falls back to polling.
+     */
+    _probeStreamAvailability() {
+        return new Promise((resolve) => {
+            fetch("/api/stream/status")
+                .then((response) => response.ok ? response.json() : null)
+                .then((data) => {
+                    this._streamAvailable = !!(data && data.active);
+                    if (data && typeof data.default_transport === "string") {
+                        _settings.applyServerDefaultTransport(data.default_transport);
+                    }
+                    resolve();
+                })
+                .catch(() => {
+                    this._streamAvailable = false;
+                    resolve();
+                });
+        });
+    }
+
+    /**
+     * Build a wrapped processor for a given polling-info entry. Shared by
+     * the streaming and polling paths so the event severity counter and
+     * error wrapping stay in lockstep across transports.
+     *
+     * @param item {endpoint, handler} entry from this.polling_info
+     * @returns processor function with signature (items, errors)
+     */
+    _buildProcessor(item) {
+        let bound = (item.handler instanceof HistoryHelper)
+            ? item.handler.update.bind(item.handler)
+            : item.handler.bind(this);
+        let processor = _validator.wrapResponseHandler(item.endpoint, bound);
+        if (item.endpoint === "events") {
+            let severity_processor = (severity) => severity.value.replace("EventSeverity.", "");
+            processor = _validator.wrapFieldCounter(
+                "severity",
+                processor,
+                severity_processor,
+                Object.fromEntries(Object.keys(config.summaryFields).map((field_key) => [field_key, 0]))
+            );
+        }
+        return processor;
+    }
+
+    _buildStreamHandlers() {
+        let handlers = {};
+        for (let item of this.polling_info) {
+            if (!STREAMED_ENDPOINTS.has(item.endpoint)) {
+                continue;
+            }
+            let processor = this._buildProcessor(item);
+            // High-rate stream handlers receive an array of items per
+            // batched envelope; wrap to match the (items, errors)
+            // signature used by the REST poller's callback.
+            handlers[item.endpoint] = (items) => processor(items, []);
+        }
+        this._streamHandlers = handlers;
+    }
+
+    /**
+     * Returns true when the streaming transport should be in use.
+     */
+    streamActive() {
+        return _settings.transport.mode === "stream" && this._streamAvailable === true;
+    }
+
+    /**
+     * Spin up (or tear down) the stream client and toggle which endpoints
+     * are polled vs pushed. Safe to call repeatedly; only the delta is acted
+     * on.
+     */
+    applyTransport() {
+        if (this.streamActive()) {
+            if (!this._stream) {
+                this._stream = new StreamClient(null, this._streamHandlers);
+                this._stream.start();
+            }
+            for (let key of STREAMED_ENDPOINTS) {
+                _loader.stopPoller(key);
+            }
+        } else {
+            if (this._stream) {
+                this._stream.stop();
+                this._stream = null;
+            }
+            for (let key of STREAMED_ENDPOINTS) {
+                this.reregisterPoller(key);
+            }
+        }
     }
 
     /**
@@ -352,21 +468,15 @@ class DataStore {
      * @param endpoint: name of the endpoint to start polling
      */
     reregisterPoller(endpoint) {
-        let handler = ((this.polling_info.filter((item) => item.endpoint === endpoint)[0]) || {}).handler;
-        if (handler && _settings.polling_intervals[endpoint] > -1) {
-            let bound = (handler instanceof HistoryHelper) ? handler.update.bind(handler) : handler.bind(this);
-            let processor = _validator.wrapResponseHandler(endpoint, bound);
-            if (endpoint === "events") {
-                let severity_processor = (severity) => {
-                    return severity.value.replace("EventSeverity.", "");
-                };
-                processor = _validator.wrapFieldCounter(
-                    "severity",
-                    processor,
-                    severity_processor,
-                    Object.fromEntries(Object.keys(config.summaryFields).map((field_key) => [field_key, 0]))
-                );
-            }
+        // Skip polling for endpoints served by the WebSocket stream when it's active.
+        if (STREAMED_ENDPOINTS.has(endpoint) && this.streamActive()) {
+            _loader.stopPoller(endpoint);
+            this.applyTransport();
+            return;
+        }
+        let item = this.polling_info.filter((entry) => entry.endpoint === endpoint)[0];
+        if (item && _settings.polling_intervals[endpoint] > -1) {
+            let processor = this._buildProcessor(item);
             let error_fn = _validator.getErrorHandler();
             _loader.registerPoller(endpoint, processor, error_fn, _settings.polling_intervals[endpoint]);
         }

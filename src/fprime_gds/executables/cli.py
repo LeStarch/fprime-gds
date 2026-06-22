@@ -1283,7 +1283,29 @@ class GdsParser(ParserBase):
                 "dest": "browser_auto_open",
                 "action": "store_false",
                 "help": "Run server without auto-launching the default web browser"
-                }
+                },
+            # WebSocket telemetry stream controls
+            ("--no-ws",): {
+                "dest": "ws_enabled",
+                "action": "store_false",
+                "default": True,
+                "help": (
+                    "Disable the /api/stream WebSocket route. The GDS "
+                    "does not register the endpoint and the front-end "
+                    "stays on REST polling."
+                ),
+            },
+            ("--ui-initial-transport",): {
+                "dest": "ui_initial_transport",
+                "choices": ["stream", "poll"],
+                "default": "stream",
+                "type": str,
+                "help": (
+                    "Front-end transport on page load. 'stream' uses "
+                    "the WebSocket push; 'poll' uses REST polling. "
+                    "[default: %(default)s]"
+                ),
+            },
         }
 
     def handle_arguments(self, args, **kwargs):
@@ -1294,6 +1316,9 @@ class GdsParser(ParserBase):
         :param args: parsed args into a namespace
         :return: args namespace
         """
+        # --no-ws implies the browser must not consider opening a WebSocket
+        if not getattr(args, "ws_enabled", True):
+            args.ui_initial_transport = "poll"
         return args
 
 
