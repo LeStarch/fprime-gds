@@ -99,9 +99,9 @@ function _readStr(uint8, state, length) {
 }
 
 function _readBin(uint8, state, length) {
-    let slice = new Uint8Array(uint8.buffer, uint8.byteOffset + state.offset, length);
+    let copy = uint8.slice(state.offset, state.offset + length);
     state.offset += length;
-    return slice;
+    return copy;
 }
 
 function _readArray(view, uint8, state, count) {
