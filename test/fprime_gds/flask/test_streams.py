@@ -8,13 +8,13 @@ event/command path that must *not* coalesce, and the close handshake.
 
 from __future__ import annotations
 
-import struct
 import threading
 import time
 
 import pytest
 
 from fprime_gds.flask import streams
+from fprime_gds.flask import ws_codec
 
 
 def _channel(cid: int, val: object = 0, ert: float = 0.0):
@@ -180,11 +180,12 @@ def test_group_batch_separates_kinds():
     assert passthrough == []
 
 
-def test_encode_produces_valid_json():
-    import json as stdlib_json
+def test_encode_produces_valid_msgpack():
+    """_encode returns msgpack bytes that roundtrip to the original structure."""
     envelope = {"type": "channel", "data": [{"id": 1, "val": 42}]}
     encoded = streams._encode(envelope)
-    decoded = stdlib_json.loads(encoded)
+    assert isinstance(encoded, bytes)
+    decoded = ws_codec.decode(encoded)
     assert decoded == envelope
 
 
@@ -232,140 +233,86 @@ def _rebind_fprime_types(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Binary encoding tests
+# MessagePack encoding tests
 # ---------------------------------------------------------------------------
 
 
-def test_is_byte_array_bytes():
-    assert streams._is_byte_array(b"\x00\x01\xff") is True
-    assert streams._is_byte_array(bytearray([0, 1, 255])) is True
+def test_is_compact_array_false_without_type_metadata():
+    """_FakeChan has no val_obj; _is_compact_array must return False."""
+    chan = _FakeChan(id=1, val=list(range(256)))
+    assert streams._is_compact_array(chan) is False
 
 
-def test_is_byte_array_list():
-    # Below threshold -> False
-    assert streams._is_byte_array(list(range(10))) is False
-    # At threshold -> True
-    big = list(range(256)) * 2  # 512 ints in [0..255]
-    assert streams._is_byte_array(big) is True
-    # Contains non-int -> False
-    bad = [0] * 100
-    bad[50] = "x"
-    assert streams._is_byte_array(bad) is False
-    # Contains out-of-range int -> False
-    bad2 = [0] * 100
-    bad2[0] = 300
-    assert streams._is_byte_array(bad2) is False
-
-
-def test_is_byte_array_other():
-    assert streams._is_byte_array(42) is False
-    assert streams._is_byte_array("hello") is False
-    assert streams._is_byte_array(None) is False
-
-
-def test_encode_binary_channel_roundtrip():
-    raw_data = bytes(range(256))
-    data_dict = {
-        "id": 42,
-        "_binary": True,
-        "_raw_bytes": raw_data,
-        "_time_parts": (2, 0, 1000, 500000),
-    }
-    frame = streams._encode_binary_channel(data_dict)
-    # Header is 25 bytes + payload
-    assert len(frame) == 25 + len(raw_data)
-    # Unpack header
-    msg_type, ch_id, t_base, t_ctx, t_sec, t_usec, d_len = struct.unpack(
-        "!BIIIIII", frame[:25]
-    )
-    assert msg_type == streams.BINARY_CHANNEL_MSG
-    assert ch_id == 42
-    assert t_base == 2
-    assert t_ctx == 0
-    assert t_sec == 1000
-    assert t_usec == 500000
-    assert d_len == 256
-    # Payload matches
-    assert frame[25:] == raw_data
-
-
-def test_encode_binary_channel_default_time():
-    data_dict = {
-        "id": 7,
-        "_binary": True,
-        "_raw_bytes": b"\xab\xcd",
-    }
-    frame = streams._encode_binary_channel(data_dict)
-    _, _, t_base, t_ctx, t_sec, t_usec, _ = struct.unpack(
-        "!BIIIIII", frame[:25]
-    )
-    assert (t_base, t_ctx, t_sec, t_usec) == (0, 0, 0, 0)
-
-
-def test_to_envelope_marks_binary_channel():
-    """A channel whose value is a large byte list gets the _binary flag."""
-    large_array = list(range(256)) * 4  # 1024 bytes
-    chan = _FakeChan(id=10, val=large_array)
+def test_to_envelope_preserves_list_without_type_metadata():
+    """Without ArrayType metadata, list values stay as lists (not bytes)."""
+    large_list = list(range(256))
+    chan = _FakeChan(id=10, val=large_list)
     envelope = streams.StreamHub._to_envelope(chan)
-    assert envelope["type"] == "channel"
     data = envelope["data"]
-    assert data["_binary"] is True
-    assert data["_raw_bytes"] == bytes(large_array)
-    assert data["_time_parts"] == (0, 0, 0, 0)  # _FakeChan has no time
+    assert data["val"] == large_list
+    assert isinstance(data["val"], list)
 
 
-def test_to_envelope_leaves_small_channel_as_json():
-    """A normal scalar channel must not be flagged as binary."""
+def test_to_envelope_scalar_channel_unchanged():
+    """A normal scalar channel value passes through unmodified."""
     chan = _FakeChan(id=5, val=42)
     envelope = streams.StreamHub._to_envelope(chan)
-    data = envelope["data"]
-    assert "_binary" not in data
-    assert "_raw_bytes" not in data
+    assert envelope["data"]["val"] == 42
 
 
-def test_group_batch_preserves_binary_flag():
-    """_group_batch extracts the inner data dict; _binary must survive."""
-    binary_data = {"id": 1, "val": None, "_binary": True, "_raw_bytes": b"\x00"}
-    json_data = {"id": 2, "val": 42}
-    envelopes = [
-        {"type": "channel", "id": 1, "data": binary_data},
-        {"type": "channel", "id": 2, "data": json_data},
-    ]
-    grouped, passthrough = streams._group_batch(envelopes)
-    items = grouped["channel"]
-    assert len(items) == 2
-    assert items[0].get("_binary") is True
-    assert items[1].get("_binary") is None
+def test_encode_roundtrip_all_types():
+    """All JSON-like types survive a msgpack encode-decode roundtrip."""
+    envelope = {
+        "type": "channel",
+        "data": [
+            {"id": 1, "val": 42},
+            {"id": 2, "val": 3.14},
+            {"id": 3, "val": "hello"},
+            {"id": 4, "val": None},
+            {"id": 5, "val": True},
+            {"id": 6, "val": [1, 2, 3]},
+        ],
+    }
+    encoded = streams._encode(envelope)
+    assert isinstance(encoded, bytes)
+    decoded = ws_codec.decode(encoded)
+    assert decoded == envelope
 
 
-def test_sender_sends_binary_frames():
-    """Verify that binary-flagged channels are sent as bytes, not JSON."""
+def test_encode_bytes_val_roundtrips_as_bytes():
+    """A bytes value encodes compactly and decodes back to bytes."""
+    raw = bytes(range(256))
+    envelope = {"type": "channel", "data": [{"id": 1, "val": raw}]}
+    encoded = streams._encode(envelope)
+    decoded = ws_codec.decode(encoded)
+    assert decoded["data"][0]["val"] == raw
+    assert isinstance(decoded["data"][0]["val"], bytes)
+
+
+def test_encode_bytes_is_compact():
+    """Bytes values should encode far smaller than list-of-ints."""
+    raw = bytes(range(256))
+    compact = streams._encode({"val": raw})
+    as_list = streams._encode({"val": list(raw)})
+    # bin encoding: ~3 + N bytes; array encoding: ~3 + 1.5N bytes (avg)
+    assert len(compact) < len(as_list) * 0.75
+
+
+def test_sender_sends_msgpack_frames():
+    """All frames from the sender loop are msgpack bytes."""
     hub = streams.StreamHub(max_depth=8)
     sub = hub.register()
 
-    # Enqueue a binary channel
-    byte_vals = list(range(256))
-    chan = _FakeChan(id=99, val=byte_vals)
-    hub.data_callback(chan)
-
-    # Also enqueue a normal event for contrast
+    hub.data_callback(_FakeChan(id=99, val=42))
     hub.data_callback(_FakeEvent(id=1, val="hello"))
+    hub.data_callback(_FakeCmd(id=7, val="run"))
 
     drained = sub.drain(timeout_s=0)
     grouped, passthrough = streams._group_batch(drained)
 
-    # Channel items: the binary one should encode to bytes
-    ch_items = grouped["channel"]
-    binary_items = [i for i in ch_items if i.get("_binary")]
-    json_items = [i for i in ch_items if not i.get("_binary")]
-    assert len(binary_items) == 1
-    assert len(json_items) == 0
-
-    frame = streams._encode_binary_channel(binary_items[0])
-    assert isinstance(frame, bytes)
-    assert frame[25:] == bytes(byte_vals)
-
-    # Event items should still JSON-encode
-    ev_items = grouped["event"]
-    encoded_json = streams._encode({"type": "event", "data": ev_items})
-    assert isinstance(encoded_json, str)
+    for kind, items in grouped.items():
+        frame = streams._encode({"type": kind, "data": items})
+        assert isinstance(frame, bytes)
+        decoded = ws_codec.decode(frame)
+        assert decoded["type"] == kind
+        assert isinstance(decoded["data"], list)

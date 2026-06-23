@@ -11,7 +11,12 @@
  *
  * Exponential-backoff reconnection is built in so a momentary server restart
  * does not require a page reload.
+ *
+ * Wire format: the server sends MessagePack-encoded binary frames for all
+ * envelope types.  A JSON text-frame fallback is retained for robustness.
  */
+
+import {decode as msgpackDecode} from "./msgpack.js";
 
 const ENVELOPE_TYPE_CHANNEL = "channel";
 const ENVELOPE_TYPE_EVENT = "event";
@@ -28,10 +33,6 @@ const STREAM_KIND_TO_ENDPOINT = {
 
 const RECONNECT_MS_MIN = 250;
 const RECONNECT_MS_MAX = 5000;
-
-// Binary frame constants — must stay in sync with streams.py.
-const BINARY_CHANNEL_MSG = 0x01;
-const BINARY_HEADER_SIZE = 25;
 
 class StreamClient {
     /**
@@ -153,13 +154,13 @@ class StreamClient {
     }
 
     _dispatch(raw) {
-        if (raw instanceof ArrayBuffer) {
-            this._dispatchBinary(raw);
-            return;
-        }
         let envelope;
         try {
-            envelope = JSON.parse(raw);
+            if (raw instanceof ArrayBuffer) {
+                envelope = msgpackDecode(raw);
+            } else {
+                envelope = JSON.parse(raw);
+            }
         } catch (e) {
             this._counters.errors += 1;
             return;
@@ -210,50 +211,6 @@ class StreamClient {
             this._counters.errors += 1;
             console.error("[stream] handler error:", e);
         }
-    }
-    /**
-     * Decode a binary WebSocket frame carrying a byte-array channel value.
-     *
-     * Frame layout (25-byte header + N-byte payload):
-     *   [1B msg_type] [4B channel_id] [4B time_base] [4B time_context]
-     *   [4B time_seconds] [4B time_useconds] [4B data_length] [raw bytes]
-     */
-    _dispatchBinary(buffer) {
-        if (buffer.byteLength < BINARY_HEADER_SIZE) {
-            this._counters.errors += 1;
-            return;
-        }
-        let view = new DataView(buffer);
-        let msgType = view.getUint8(0);
-        if (msgType !== BINARY_CHANNEL_MSG) {
-            this._counters.errors += 1;
-            return;
-        }
-        let channelId = view.getUint32(1);
-        let timeBase = view.getUint32(5);
-        let timeContext = view.getUint32(9);
-        let timeSeconds = view.getUint32(13);
-        let timeUseconds = view.getUint32(17);
-        let dataLength = view.getUint32(21);
-        if (buffer.byteLength < BINARY_HEADER_SIZE + dataLength) {
-            this._counters.errors += 1;
-            return;
-        }
-        let payload = new Uint8Array(buffer, BINARY_HEADER_SIZE, dataLength);
-        let item = {
-            id: channelId,
-            val: payload,
-            time: {
-                base: timeBase,
-                context: timeContext,
-                seconds: timeSeconds,
-                microseconds: timeUseconds,
-            },
-            display_text: null,
-            ert: null,
-        };
-        this._counters.received += 1;
-        this._invoke(STREAM_KIND_TO_ENDPOINT[ENVELOPE_TYPE_CHANNEL], [item]);
     }
 }
 

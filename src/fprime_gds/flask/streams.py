@@ -30,20 +30,20 @@ the rest of the GDS continues to operate via REST polling.
 
 from __future__ import annotations
 
-import json
 import logging
-import struct
 import threading
 import time
 import uuid
 from collections import deque
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional
 
 from fprime_gds.common.data_types.ch_data import ChData
 from fprime_gds.common.data_types.cmd_data import CmdData
 from fprime_gds.common.data_types.event_data import EventData
 from fprime_gds.common.handlers import DataHandler
+from fprime_gds.common.models.serialize.array_type import ArrayType
 from fprime_gds.flask import json as flask_json
+from fprime_gds.flask import ws_codec
 
 try:  # pragma: no cover - optional dependency
     from flask_sock import Sock
@@ -66,21 +66,6 @@ KIND_EVENT = "event"
 KIND_COMMAND = "command"
 KIND_HELLO = "hello"
 KIND_ERROR = "error"
-
-BINARY_CHANNEL_MSG = 0x01
-"""Message-type byte identifying a binary-encoded channel frame."""
-
-_BINARY_THRESHOLD = 64
-"""Minimum list length to consider for binary encoding.  Shorter lists
-are left on the JSON path — the overhead is only significant for large
-byte-array payloads."""
-
-_BINARY_HEADER = struct.Struct("!BIIIIII")
-"""Header layout for a binary channel frame (25 bytes, network order):
-
-  [1B msg_type] [4B channel_id] [4B time_base] [4B time_context]
-  [4B time_seconds] [4B time_useconds] [4B data_length]
-"""
 
 #: Kinds that are coalesced into a per-kind batched ``ws.send`` payload by
 #: the sender thread.
@@ -105,7 +90,7 @@ accumulate before draining. Coalesces same-kind samples into a single
 ``ws.send`` so the browser does one ``JSON.parse`` / handler dispatch per
 kind per window instead of one per sample.
 
-Default is sized to one F Prime frame at 35 Hz (1/35 s = 28.6 ms).
+Default is sized to one F Prime frame at 35 Hz (1/35\u2009s ≈ 28.6\u2009ms).
 """
 
 DEFAULT_RECEIVE_TIMEOUT_S = 1.0
@@ -295,15 +280,11 @@ class StreamHub(DataHandler):
         if isinstance(data, ChData):
             channel_data = flask_json.minimal_channel(data)
             val = channel_data.get("val")
-            if _is_byte_array(val):
+            if isinstance(val, list) and _is_compact_array(data):
                 try:
-                    raw = _to_bytes(val)
+                    channel_data["val"] = bytes(val)
                 except (ValueError, TypeError):
                     pass
-                else:
-                    channel_data["_binary"] = True
-                    channel_data["_raw_bytes"] = raw
-                    channel_data["_time_parts"] = _extract_time_parts(data)
             return {
                 "type": KIND_CHANNEL,
                 "id": data.id,
@@ -328,68 +309,35 @@ class StreamHub(DataHandler):
 # Wire encoding helpers (shared by sender thread + tests)
 # ---------------------------------------------------------------------------
 
-def _encode(payload: Any) -> str:
-    """JSON-encode an envelope (or batched envelope) for the wire."""
-    return json.dumps(payload, default=flask_json.default, allow_nan=True)
+def _encode(payload: Any) -> bytes:
+    """Encode an envelope for the WebSocket wire using MessagePack.
 
+    Uses a minimal built-in MessagePack encoder (:mod:`ws_codec`) so that
+    all data types are compactly serialised — especially ``bytes`` values
+    which the msgpack *bin* family encodes with only a 2–5 byte header
+    instead of the ≈10× JSON expansion for byte arrays.
 
-# ---------------------------------------------------------------------------
-# Binary encoding helpers
-# ---------------------------------------------------------------------------
-
-def _is_byte_array(val: object) -> bool:
-    """Return *True* when *val* should use the binary WebSocket path.
-
-    Matches ``bytes``, ``bytearray``, and lists of ints whose length
-    exceeds :data:`_BINARY_THRESHOLD`.  For lists a fast spot-check
-    (first, middle, last element) is used instead of scanning every
-    element.
+    The ``default`` callback reuses the existing :func:`flask_json.default`
+    converter so ``TimeType``, ``ValueType``, enums, etc. are handled
+    identically to the JSON/REST path.
     """
-    if isinstance(val, (bytes, bytearray)):
-        return True
-    if not isinstance(val, list) or len(val) < _BINARY_THRESHOLD:
-        return False
-    for v in (val[0], val[len(val) // 2], val[-1]):
-        if not isinstance(v, int) or not (0 <= v <= 255):
-            return False
-    return True
+    return ws_codec.encode(payload, default=flask_json.default)
 
 
-def _to_bytes(val: object) -> bytes:
-    """Coerce a byte-array value to ``bytes``."""
-    if isinstance(val, bytes):
-        return val
-    if isinstance(val, bytearray):
-        return bytes(val)
-    return bytes(val)  # type: ignore[arg-type]
+def _is_compact_array(data: object) -> bool:
+    """Return *True* when *data* carries a single-byte numerical array.
 
-
-def _extract_time_parts(data: object) -> Tuple[int, int, int, int]:
-    """Extract ``(base, context, seconds, useconds)`` from a data object."""
+    Uses the F Prime type system (``ArrayType`` / ``NumericalType``)
+    rather than heuristic value inspection.  Returns *False* when type
+    metadata is unavailable (e.g. in unit-test fakes).
+    """
     try:
-        t = data.time  # type: ignore[union-attr]
-        return (t.timeBase.numeric_value, t.timeContext, t.seconds, t.useconds)
-    except AttributeError:
-        return (0, 0, 0, 0)
-
-
-def _encode_binary_channel(data: Dict[str, Any]) -> bytes:
-    """Pack a binary-flagged channel data dict into a binary WebSocket frame.
-
-    Frame layout (25-byte header + *N*-byte payload)::
-
-        [1B msg_type=0x01] [4B channel_id] [4B time_base] [4B time_context]
-        [4B time_seconds] [4B time_useconds] [4B data_length] [raw bytes …]
-    """
-    raw = data["_raw_bytes"]
-    tp: Tuple[int, int, int, int] = data.get("_time_parts", (0, 0, 0, 0))
-    header = _BINARY_HEADER.pack(
-        BINARY_CHANNEL_MSG,
-        data["id"],
-        tp[0], tp[1], tp[2], tp[3],
-        len(raw),
-    )
-    return header + raw
+        val_obj = data.val_obj  # type: ignore[union-attr]
+        if isinstance(val_obj, ArrayType) and val_obj._is_numerical_array():
+            return val_obj.MEMBER_TYPE.getMaxSize() == 1
+    except (AttributeError, TypeError):
+        pass
+    return False
 
 
 def _group_batch(envelopes: Iterable[Dict[str, Any]]):
@@ -483,17 +431,7 @@ class _StreamSession:
                 for kind, items in grouped.items():
                     if self._stop.is_set():
                         return
-                    if kind == KIND_CHANNEL:
-                        binary_items = [i for i in items if i.get("_binary")]
-                        json_items = [i for i in items if not i.get("_binary")]
-                        for bin_item in binary_items:
-                            if self._stop.is_set():
-                                return
-                            self._send_raw(_encode_binary_channel(bin_item))
-                        if json_items:
-                            self._send_raw(_encode({"type": kind, "data": json_items}))
-                    else:
-                        self._send_raw(_encode({"type": kind, "data": items}))
+                    self._send_raw(_encode({"type": kind, "data": items}))
                 for envelope in passthrough:
                     if self._stop.is_set():
                         return
@@ -521,7 +459,7 @@ class _StreamSession:
     def _send(self, payload: Dict[str, Any]) -> None:
         self._send_raw(_encode(payload))
 
-    def _send_raw(self, payload: Union[str, bytes]) -> None:
+    def _send_raw(self, payload: bytes) -> None:
         with self._ws_lock:
             self._ws.send(payload)
 
