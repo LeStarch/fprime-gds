@@ -11,7 +11,14 @@
  *
  * Exponential-backoff reconnection is built in so a momentary server restart
  * does not require a page reload.
+ *
+ * Wire format: the server sends MessagePack-encoded binary frames for all
+ * envelope types.  A JSON text-frame fallback is retained for robustness.
  */
+
+// MessagePack is loaded as a global via <script> tag in index.html
+// (third-party/js/msgpack.min.js — @msgpack/msgpack v2.8.0, ISC license).
+const msgpackDecode = MessagePack.decode;
 
 const ENVELOPE_TYPE_CHANNEL = "channel";
 const ENVELOPE_TYPE_EVENT = "event";
@@ -114,6 +121,7 @@ class StreamClient {
         this.ws.onerror = () => {
             this._counters.errors += 1;
         };
+        this.ws.binaryType = "arraybuffer";
         this.ws.onmessage = (event) => this._dispatch(event.data);
     }
 
@@ -150,7 +158,11 @@ class StreamClient {
     _dispatch(raw) {
         let envelope;
         try {
-            envelope = JSON.parse(raw);
+            if (raw instanceof ArrayBuffer) {
+                envelope = msgpackDecode(new Uint8Array(raw));
+            } else {
+                envelope = JSON.parse(raw);
+            }
         } catch (e) {
             this._counters.errors += 1;
             return;

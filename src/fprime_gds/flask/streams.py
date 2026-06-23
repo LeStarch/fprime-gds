@@ -30,7 +30,6 @@ the rest of the GDS continues to operate via REST polling.
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 import time
@@ -42,7 +41,9 @@ from fprime_gds.common.data_types.ch_data import ChData
 from fprime_gds.common.data_types.cmd_data import CmdData
 from fprime_gds.common.data_types.event_data import EventData
 from fprime_gds.common.handlers import DataHandler
+from fprime_gds.common.models.serialize.array_type import ArrayType
 from fprime_gds.flask import json as flask_json
+from fprime_gds.flask import ws_codec
 
 try:  # pragma: no cover - optional dependency
     from flask_sock import Sock
@@ -89,7 +90,7 @@ accumulate before draining. Coalesces same-kind samples into a single
 ``ws.send`` so the browser does one ``JSON.parse`` / handler dispatch per
 kind per window instead of one per sample.
 
-Default is sized to one F Prime frame at 35 Hz (1/35 s = 28.6 ms).
+Default is sized to one F Prime frame at 35 Hz (1/35\u2009s ≈ 28.6\u2009ms).
 """
 
 DEFAULT_RECEIVE_TIMEOUT_S = 1.0
@@ -277,10 +278,17 @@ class StreamHub(DataHandler):
     @staticmethod
     def _to_envelope(data) -> Optional[Dict[str, Any]]:
         if isinstance(data, ChData):
+            channel_data = flask_json.minimal_channel(data)
+            val = channel_data.get("val")
+            if isinstance(val, list) and _is_compact_array(data):
+                try:
+                    channel_data["val"] = bytes(val)
+                except (ValueError, TypeError):
+                    pass
             return {
                 "type": KIND_CHANNEL,
                 "id": data.id,
-                "data": flask_json.minimal_channel(data),
+                "data": channel_data,
             }
         if isinstance(data, EventData):
             return {
@@ -301,9 +309,42 @@ class StreamHub(DataHandler):
 # Wire encoding helpers (shared by sender thread + tests)
 # ---------------------------------------------------------------------------
 
-def _encode(payload: Any) -> str:
-    """JSON-encode an envelope (or batched envelope) for the wire."""
-    return json.dumps(payload, default=flask_json.default, allow_nan=True)
+def _encode(payload: Any) -> bytes:
+    """Encode an envelope for the WebSocket wire using MessagePack.
+
+    Uses the C-accelerated ``msgpack`` library (via :mod:`ws_codec`) so
+    that all data types are compactly serialised — especially ``bytes``
+    values which the msgpack *bin* family encodes with only a 2–5 byte
+    header instead of the ≈10× JSON expansion for byte arrays.
+
+    The ``default`` callback reuses the existing :func:`flask_json.default`
+    converter so ``TimeType``, ``ValueType``, enums, etc. are handled
+    identically to the JSON/REST path.
+    """
+    return ws_codec.encode(payload, default=flask_json.default)
+
+
+def _is_compact_array(data: object) -> bool:
+    """Return *True* when *data* carries an unsigned single-byte array.
+
+    Uses the F Prime type system (``ArrayType`` / ``IntegerType``) to
+    identify arrays whose elements are unsigned bytes (U8).  Signed
+    single-byte types (I8, range −128..127) are excluded because
+    ``bytes()`` only accepts values in 0..255.
+
+    Returns *False* when type metadata is unavailable (e.g. in
+    unit-test fakes).
+    """
+    try:
+        val_obj = data.val_obj  # type: ignore[union-attr]
+        if isinstance(val_obj, ArrayType) and val_obj._is_numerical_array():
+            mt = val_obj.MEMBER_TYPE
+            if mt.getMaxSize() == 1:
+                low, _high = mt.range()
+                return low >= 0
+    except (AttributeError, TypeError):
+        pass
+    return False
 
 
 def _group_batch(envelopes: Iterable[Dict[str, Any]]):
@@ -425,7 +466,7 @@ class _StreamSession:
     def _send(self, payload: Dict[str, Any]) -> None:
         self._send_raw(_encode(payload))
 
-    def _send_raw(self, payload: str) -> None:
+    def _send_raw(self, payload: bytes) -> None:
         with self._ws_lock:
             self._ws.send(payload)
 

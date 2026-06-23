@@ -14,6 +14,7 @@ import time
 import pytest
 
 from fprime_gds.flask import streams
+from fprime_gds.flask import ws_codec
 
 
 def _channel(cid: int, val: object = 0, ert: float = 0.0):
@@ -179,11 +180,12 @@ def test_group_batch_separates_kinds():
     assert passthrough == []
 
 
-def test_encode_produces_valid_json():
-    import json as stdlib_json
+def test_encode_produces_valid_msgpack():
+    """_encode returns msgpack bytes that roundtrip to the original structure."""
     envelope = {"type": "channel", "data": [{"id": 1, "val": 42}]}
     encoded = streams._encode(envelope)
-    decoded = stdlib_json.loads(encoded)
+    assert isinstance(encoded, bytes)
+    decoded = ws_codec.decode(encoded)
     assert decoded == envelope
 
 
@@ -228,3 +230,89 @@ def _rebind_fprime_types(monkeypatch):
     monkeypatch.setattr(streams, "ChData", _FakeChan)
     monkeypatch.setattr(streams, "EventData", _FakeEvent)
     monkeypatch.setattr(streams, "CmdData", _FakeCmd)
+
+
+# ---------------------------------------------------------------------------
+# MessagePack encoding tests
+# ---------------------------------------------------------------------------
+
+
+def test_is_compact_array_false_without_type_metadata():
+    """_FakeChan has no val_obj; _is_compact_array must return False."""
+    chan = _FakeChan(id=1, val=list(range(256)))
+    assert streams._is_compact_array(chan) is False
+
+
+def test_to_envelope_preserves_list_without_type_metadata():
+    """Without ArrayType metadata, list values stay as lists (not bytes)."""
+    large_list = list(range(256))
+    chan = _FakeChan(id=10, val=large_list)
+    envelope = streams.StreamHub._to_envelope(chan)
+    data = envelope["data"]
+    assert data["val"] == large_list
+    assert isinstance(data["val"], list)
+
+
+def test_to_envelope_scalar_channel_unchanged():
+    """A normal scalar channel value passes through unmodified."""
+    chan = _FakeChan(id=5, val=42)
+    envelope = streams.StreamHub._to_envelope(chan)
+    assert envelope["data"]["val"] == 42
+
+
+def test_encode_roundtrip_all_types():
+    """All JSON-like types survive a msgpack encode-decode roundtrip."""
+    envelope = {
+        "type": "channel",
+        "data": [
+            {"id": 1, "val": 42},
+            {"id": 2, "val": 3.14},
+            {"id": 3, "val": "hello"},
+            {"id": 4, "val": None},
+            {"id": 5, "val": True},
+            {"id": 6, "val": [1, 2, 3]},
+        ],
+    }
+    encoded = streams._encode(envelope)
+    assert isinstance(encoded, bytes)
+    decoded = ws_codec.decode(encoded)
+    assert decoded == envelope
+
+
+def test_encode_bytes_val_roundtrips_as_bytes():
+    """A bytes value encodes compactly and decodes back to bytes."""
+    raw = bytes(range(256))
+    envelope = {"type": "channel", "data": [{"id": 1, "val": raw}]}
+    encoded = streams._encode(envelope)
+    decoded = ws_codec.decode(encoded)
+    assert decoded["data"][0]["val"] == raw
+    assert isinstance(decoded["data"][0]["val"], bytes)
+
+
+def test_encode_bytes_is_compact():
+    """Bytes values should encode far smaller than list-of-ints."""
+    raw = bytes(range(256))
+    compact = streams._encode({"val": raw})
+    as_list = streams._encode({"val": list(raw)})
+    # bin encoding: ~3 + N bytes; array encoding: ~3 + 1.5N bytes (avg)
+    assert len(compact) < len(as_list) * 0.75
+
+
+def test_sender_sends_msgpack_frames():
+    """All frames from the sender loop are msgpack bytes."""
+    hub = streams.StreamHub(max_depth=8)
+    sub = hub.register()
+
+    hub.data_callback(_FakeChan(id=99, val=42))
+    hub.data_callback(_FakeEvent(id=1, val="hello"))
+    hub.data_callback(_FakeCmd(id=7, val="run"))
+
+    drained = sub.drain(timeout_s=0)
+    grouped, passthrough = streams._group_batch(drained)
+
+    for kind, items in grouped.items():
+        frame = streams._encode({"type": kind, "data": items})
+        assert isinstance(frame, bytes)
+        decoded = ws_codec.decode(frame)
+        assert decoded["type"] == kind
+        assert isinstance(decoded["data"], list)
