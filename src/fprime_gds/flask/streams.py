@@ -73,7 +73,7 @@ BINARY_CHANNEL_MSG = 0x01
 _BINARY_THRESHOLD = 64
 """Minimum list length to consider for binary encoding.  Shorter lists
 are left on the JSON path — the overhead is only significant for large
-payloads such as DOOM's 3 200-byte pixel arrays."""
+byte-array payloads."""
 
 _BINARY_HEADER = struct.Struct("!BIIIIII")
 """Header layout for a binary channel frame (25 bytes, network order):

@@ -304,13 +304,13 @@ def test_encode_binary_channel_default_time():
 
 def test_to_envelope_marks_binary_channel():
     """A channel whose value is a large byte list gets the _binary flag."""
-    pixel_data = list(range(256)) * 4  # 1024 bytes
-    chan = _FakeChan(id=10, val=pixel_data)
+    large_array = list(range(256)) * 4  # 1024 bytes
+    chan = _FakeChan(id=10, val=large_array)
     envelope = streams.StreamHub._to_envelope(chan)
     assert envelope["type"] == "channel"
     data = envelope["data"]
     assert data["_binary"] is True
-    assert data["_raw_bytes"] == bytes(pixel_data)
+    assert data["_raw_bytes"] == bytes(large_array)
     assert data["_time_parts"] == (0, 0, 0, 0)  # _FakeChan has no time
 
 
@@ -344,8 +344,8 @@ def test_sender_sends_binary_frames():
     sub = hub.register()
 
     # Enqueue a binary channel
-    pixel_vals = list(range(256))
-    chan = _FakeChan(id=99, val=pixel_vals)
+    byte_vals = list(range(256))
+    chan = _FakeChan(id=99, val=byte_vals)
     hub.data_callback(chan)
 
     # Also enqueue a normal event for contrast
@@ -363,7 +363,7 @@ def test_sender_sends_binary_frames():
 
     frame = streams._encode_binary_channel(binary_items[0])
     assert isinstance(frame, bytes)
-    assert frame[25:] == bytes(pixel_vals)
+    assert frame[25:] == bytes(byte_vals)
 
     # Event items should still JSON-encode
     ev_items = grouped["event"]
