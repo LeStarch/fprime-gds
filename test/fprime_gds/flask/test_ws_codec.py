@@ -150,7 +150,7 @@ class TestDefault:
         assert result == 42
 
     def test_no_default_raises(self):
-        with pytest.raises(TypeError, match="not MessagePack serializable"):
+        with pytest.raises(TypeError):
             ws_codec.encode(object())
 
 

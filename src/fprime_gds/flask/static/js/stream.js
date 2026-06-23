@@ -16,7 +16,9 @@
  * envelope types.  A JSON text-frame fallback is retained for robustness.
  */
 
-import {decode as msgpackDecode} from "./msgpack.js";
+// MessagePack is loaded as a global via <script> tag in index.html
+// (third-party/js/msgpack.min.js — @msgpack/msgpack v2.8.0, ISC license).
+const msgpackDecode = MessagePack.decode;
 
 const ENVELOPE_TYPE_CHANNEL = "channel";
 const ENVELOPE_TYPE_EVENT = "event";
@@ -157,7 +159,7 @@ class StreamClient {
         let envelope;
         try {
             if (raw instanceof ArrayBuffer) {
-                envelope = msgpackDecode(raw);
+                envelope = msgpackDecode(new Uint8Array(raw));
             } else {
                 envelope = JSON.parse(raw);
             }

@@ -1,18 +1,13 @@
-"""Minimal MessagePack encoder/decoder for WebSocket streaming.
+"""MessagePack codec for WebSocket streaming.
 
-Implements the subset of the `MessagePack specification
-<https://github.com/msgpack/msgpack/blob/master/spec.md>`_ required by the
-GDS WebSocket wire format.  Uses the same ``default`` callback convention as
-:func:`json.dumps` so that application types (``TimeType``, ``ValueType``,
-enums, etc.) are converted to primitive dicts/lists before packing.
+Encoding uses the C-accelerated ``msgpack`` library for production
+throughput.  A ``default`` callback converts application types
+(``TimeType``, ``ValueType``, enums, etc.) to primitives before packing,
+mirroring the contract of :func:`json.dumps`.
 
-The :func:`decode` function is provided for testing and diagnostics; the
-primary consumer of the wire bytes is the JavaScript ``msgpack.js`` decoder
-running in the browser.
-
-No external dependencies are required.  If the ``msgpack`` C-accelerated
-package is installed the module can be swapped in as a drop-in replacement
-since the wire format is identical.
+The :func:`decode` function is a pure-Python implementation kept for
+testing and diagnostics; the primary consumer of the wire bytes is the
+JavaScript ``@msgpack/msgpack`` decoder running in the browser.
 """
 
 from __future__ import annotations
@@ -20,11 +15,11 @@ from __future__ import annotations
 import struct
 from typing import Any, Callable, Optional
 
-_float64_be = struct.Struct(">d")
+import msgpack as _msgpack
 
 
 def encode(obj: Any, *, default: Optional[Callable] = None) -> bytes:
-    """Encode *obj* to MessagePack bytes.
+    """Encode *obj* to MessagePack bytes using the C-accelerated library.
 
     Parameters
     ----------
@@ -35,138 +30,14 @@ def encode(obj: Any, *, default: Optional[Callable] = None) -> bytes:
         Optional callable invoked for objects that are not natively
         serializable (same contract as ``json.dumps(default=...)``)
     """
-    buf = bytearray()
-    _pack(obj, buf, default or _no_default)
-    return bytes(buf)
-
-
-def _no_default(obj: object) -> None:
-    raise TypeError(
-        f"Object of type {type(obj).__name__} is not MessagePack serializable"
-    )
-
-
-# -- packing helpers ----------------------------------------------------------
-
-def _pack(obj: Any, buf: bytearray, default: Callable) -> None:
-    if obj is None:
-        buf.append(0xC0)
-    elif obj is True:
-        buf.append(0xC3)
-    elif obj is False:
-        buf.append(0xC2)
-    elif isinstance(obj, int):
-        _pack_int(obj, buf)
-    elif isinstance(obj, float):
-        buf.append(0xCB)
-        buf.extend(_float64_be.pack(obj))
-    elif isinstance(obj, str):
-        _pack_str(obj, buf)
-    elif isinstance(obj, (bytes, bytearray, memoryview)):
-        _pack_bin(bytes(obj), buf)
-    elif isinstance(obj, dict):
-        _pack_map(obj, buf, default)
-    elif isinstance(obj, (list, tuple)):
-        _pack_array(obj, buf, default)
-    else:
-        _pack(default(obj), buf, default)
-
-
-def _pack_int(n: int, buf: bytearray) -> None:
-    if 0 <= n <= 0x7F:
-        buf.append(n)
-    elif -32 <= n < 0:
-        buf.append(n & 0xFF)
-    elif 0 <= n <= 0xFF:
-        buf.append(0xCC)
-        buf.append(n)
-    elif 0 <= n <= 0xFFFF:
-        buf.append(0xCD)
-        buf.extend(n.to_bytes(2, "big"))
-    elif 0 <= n <= 0xFFFF_FFFF:
-        buf.append(0xCE)
-        buf.extend(n.to_bytes(4, "big"))
-    elif 0 <= n:
-        buf.append(0xCF)
-        buf.extend(n.to_bytes(8, "big"))
-    elif -128 <= n:
-        buf.append(0xD0)
-        buf.extend(n.to_bytes(1, "big", signed=True))
-    elif -32768 <= n:
-        buf.append(0xD1)
-        buf.extend(n.to_bytes(2, "big", signed=True))
-    elif -2_147_483_648 <= n:
-        buf.append(0xD2)
-        buf.extend(n.to_bytes(4, "big", signed=True))
-    else:
-        buf.append(0xD3)
-        buf.extend(n.to_bytes(8, "big", signed=True))
-
-
-def _pack_str(s: str, buf: bytearray) -> None:
-    data = s.encode("utf-8")
-    n = len(data)
-    if n <= 31:
-        buf.append(0xA0 | n)
-    elif n <= 0xFF:
-        buf.append(0xD9)
-        buf.append(n)
-    elif n <= 0xFFFF:
-        buf.append(0xDA)
-        buf.extend(n.to_bytes(2, "big"))
-    else:
-        buf.append(0xDB)
-        buf.extend(n.to_bytes(4, "big"))
-    buf.extend(data)
-
-
-def _pack_bin(data: bytes, buf: bytearray) -> None:
-    n = len(data)
-    if n <= 0xFF:
-        buf.append(0xC4)
-        buf.append(n)
-    elif n <= 0xFFFF:
-        buf.append(0xC5)
-        buf.extend(n.to_bytes(2, "big"))
-    else:
-        buf.append(0xC6)
-        buf.extend(n.to_bytes(4, "big"))
-    buf.extend(data)
-
-
-def _pack_array(items: Any, buf: bytearray, default: Callable) -> None:
-    n = len(items)
-    if n <= 15:
-        buf.append(0x90 | n)
-    elif n <= 0xFFFF:
-        buf.append(0xDC)
-        buf.extend(n.to_bytes(2, "big"))
-    else:
-        buf.append(0xDD)
-        buf.extend(n.to_bytes(4, "big"))
-    for item in items:
-        _pack(item, buf, default)
-
-
-def _pack_map(d: dict, buf: bytearray, default: Callable) -> None:
-    n = len(d)
-    if n <= 15:
-        buf.append(0x80 | n)
-    elif n <= 0xFFFF:
-        buf.append(0xDE)
-        buf.extend(n.to_bytes(2, "big"))
-    else:
-        buf.append(0xDF)
-        buf.extend(n.to_bytes(4, "big"))
-    for key, value in d.items():
-        _pack(key, buf, default)
-        _pack(value, buf, default)
+    return _msgpack.packb(obj, default=default, use_bin_type=True)
 
 
 # =========================================================================
-# Decoder
+# Decoder  (pure-Python — kept for tests and diagnostics)
 # =========================================================================
 
+_float64_be = struct.Struct(">d")
 _float32_be = struct.Struct(">f")
 
 

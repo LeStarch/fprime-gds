@@ -312,10 +312,10 @@ class StreamHub(DataHandler):
 def _encode(payload: Any) -> bytes:
     """Encode an envelope for the WebSocket wire using MessagePack.
 
-    Uses a minimal built-in MessagePack encoder (:mod:`ws_codec`) so that
-    all data types are compactly serialised — especially ``bytes`` values
-    which the msgpack *bin* family encodes with only a 2–5 byte header
-    instead of the ≈10× JSON expansion for byte arrays.
+    Uses the C-accelerated ``msgpack`` library (via :mod:`ws_codec`) so
+    that all data types are compactly serialised — especially ``bytes``
+    values which the msgpack *bin* family encodes with only a 2–5 byte
+    header instead of the ≈10× JSON expansion for byte arrays.
 
     The ``default`` callback reuses the existing :func:`flask_json.default`
     converter so ``TimeType``, ``ValueType``, enums, etc. are handled
