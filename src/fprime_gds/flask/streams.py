@@ -325,16 +325,23 @@ def _encode(payload: Any) -> bytes:
 
 
 def _is_compact_array(data: object) -> bool:
-    """Return *True* when *data* carries a single-byte numerical array.
+    """Return *True* when *data* carries an unsigned single-byte array.
 
-    Uses the F Prime type system (``ArrayType`` / ``NumericalType``)
-    rather than heuristic value inspection.  Returns *False* when type
-    metadata is unavailable (e.g. in unit-test fakes).
+    Uses the F Prime type system (``ArrayType`` / ``IntegerType``) to
+    identify arrays whose elements are unsigned bytes (U8).  Signed
+    single-byte types (I8, range −128..127) are excluded because
+    ``bytes()`` only accepts values in 0..255.
+
+    Returns *False* when type metadata is unavailable (e.g. in
+    unit-test fakes).
     """
     try:
         val_obj = data.val_obj  # type: ignore[union-attr]
         if isinstance(val_obj, ArrayType) and val_obj._is_numerical_array():
-            return val_obj.MEMBER_TYPE.getMaxSize() == 1
+            mt = val_obj.MEMBER_TYPE
+            if mt.getMaxSize() == 1:
+                low, _high = mt.range()
+                return low >= 0
     except (AttributeError, TypeError):
         pass
     return False
