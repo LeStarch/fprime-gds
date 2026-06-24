@@ -72,14 +72,9 @@ class ChData(sys_data.SysData):
         format string IS configured, the formatted representation is
         computed on first access and cached.
         """
-        if self._display_text is not _DISPLAY_TEXT_UNSET:
-            return self._display_text
-        self._display_text = self._compute_display_text()
+        if self._display_text is _DISPLAY_TEXT_UNSET:
+            self._display_text = self._compute_display_text()
         return self._display_text
-
-    @display_text.setter
-    def display_text(self, value):
-        self._display_text = value
 
     def _compute_display_text(self):
         """Compute the formatted display text for this channel reading.
