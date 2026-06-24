@@ -17,6 +17,10 @@ from fprime_gds.common.data_types import sys_data
 from fprime_gds.common.utils.string_util import format_string_template
 
 
+# Sentinel indicating display_text has not yet been computed.
+_DISPLAY_TEXT_UNSET = object()
+
+
 class ChData(sys_data.SysData):
     """
     The ChData class stores a specific channel telemetry reading.
@@ -42,7 +46,7 @@ class ChData(sys_data.SysData):
         self.time = ch_time
         self.template = ch_temp
         self.pkt = None
-        self.display_text = self._compute_display_text(ch_val_obj, ch_temp)
+        self._display_text = _DISPLAY_TEXT_UNSET
         # Earth Received Time - timestamp when GDS created this channel data object
         self.ert = datetime.datetime.now(datetime.timezone.utc)
 
@@ -59,27 +63,42 @@ class ChData(sys_data.SysData):
         """
         return ChData(None, time_type.TimeType(), ch_temp)
 
-    def _compute_display_text(self, val_obj, template):
+    @property
+    def display_text(self):
+        """Lazy-evaluated display text.
+
+        Returns *None* when the channel template has no format string
+        (the UI falls back to the raw ``val`` in that case).  When a
+        format string IS configured, the formatted representation is
+        computed on first access and cached.
         """
-        Returns the display_text for the channel by computing it. This function is defined so as not to clutter __init__()
-        but should not be called elsewhere. Use get_display_text() instead.
-        Does not depend on self state so as not to be dependent on the order of initialization.
+        if self._display_text is _DISPLAY_TEXT_UNSET:
+            self._display_text = self._compute_display_text()
+        return self._display_text
+
+    def _compute_display_text(self):
+        """Compute the formatted display text for this channel reading.
+
+        Returns *None* when the channel template has no format string,
+        signalling that downstream consumers should use the raw value.
         """
-        # This can happen when constructing empty objects (e.g. when listing channels)
-        # in which case we just display the description
+        val_obj = self.val_obj
+        template = self.template
+        # Empty objects (e.g. when listing channels) show the description
         if val_obj is None:
             return template.ch_desc
+        fmt_str = template.get_format_str()
+        # No format string → skip expensive formatting; UI uses val directly
+        if not fmt_str:
+            return None
         temp_val = (
             val_obj.val
             if not isinstance(val_obj, (SerializableType, ArrayType))
             else val_obj.formatted_val
         )
-        fmt_str = template.get_format_str()
         if temp_val is None:
             return ""
-        if fmt_str:
-            return format_string_template(fmt_str, (temp_val,))
-        return temp_val
+        return format_string_template(fmt_str, (temp_val,))
 
     def set_pkt(self, pkt):
         """
@@ -120,9 +139,16 @@ class ChData(sys_data.SysData):
 
     def get_display_text(self):
         """
-        Convert the channel value to a string, using the format specifier if provided
+        Convert the channel value to a string, using the format specifier if provided.
+        Falls back to the raw value when no format string is configured.
         """
-        return self.display_text
+        text = self.display_text
+        if text is None:
+            if self.val_obj is None:
+                return ""
+            val = self.val_obj.val
+            return val if val is not None else ""
+        return text
 
     @staticmethod
     def get_csv_header(verbose=False):
