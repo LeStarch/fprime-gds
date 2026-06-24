@@ -149,7 +149,10 @@ class ChData(sys_data.SysData):
         """
         text = self.display_text
         if text is None:
-            return self.val_obj.val if self.val_obj is not None else ""
+            if self.val_obj is None:
+                return ""
+            val = self.val_obj.val
+            return val if val is not None else ""
         return text
 
     @staticmethod
