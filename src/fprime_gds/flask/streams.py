@@ -280,7 +280,7 @@ class StreamHub(DataHandler):
         if isinstance(data, ChData):
             channel_data = flask_json.minimal_channel(data)
             val = channel_data.get("val")
-            if isinstance(val, list) and _is_compact_array(data):
+            if isinstance(val, (list, tuple)) and _is_compact_array(data):
                 try:
                     channel_data["val"] = bytes(val)
                 except (ValueError, TypeError):

@@ -22,6 +22,10 @@ class ArrayType(DictionaryType):
     Represents a custom named type of a fixed number of like members, each of which are other types in the system.
     """
 
+    def __init__(self, val=None):
+        self._val_tuple = None
+        super().__init__(val)
+
     @classmethod
     def construct_type(cls, name, member_type, length, format, default=None):
         """Constructs a sub-array type
@@ -54,19 +58,23 @@ class ArrayType(DictionaryType):
         return issubclass(self.MEMBER_TYPE, NumericalType)
 
     @property
-    def val(self) -> list:
+    def val(self) -> tuple:
         """
-        The .val property typically returns the python-native type. This the python native type closes to a serializable
-        without generating full classes would be a dictionary (anonymous object). This returns such an object.
+        Returns an immutable tuple of python-native values.
 
-        :return dictionary of member names to python values of member keys
+        The result is cached and reused until the value is changed via
+        the setter or ``deserialize``.  Returning a tuple instead of a
+        list prevents consumers from accidentally mutating the internal
+        state.
         """
         if self._val is None:
             return None
-        elif self._is_numerical_array():
-            return list(self._val)
-        else:
-            return [item.val for item in self._val]
+        if self._val_tuple is None:
+            if self._is_numerical_array():
+                self._val_tuple = tuple(self._val)
+            else:
+                self._val_tuple = tuple(item.val for item in self._val)
+        return self._val_tuple
 
     @property
     def formatted_val(self) -> list:
@@ -103,6 +111,7 @@ class ArrayType(DictionaryType):
         else:
             items = [self.MEMBER_TYPE(item) for item in val]
         self._val = items
+        self._val_tuple = None
 
     def to_jsonable(self):
         """
@@ -172,6 +181,7 @@ class ArrayType(DictionaryType):
                         f"Array index {field_index} failed to deserialize: {exc}"
                     )
         self._val = values
+        self._val_tuple = None
 
     def getSize(self):
         """Return the size in bytes of the array"""

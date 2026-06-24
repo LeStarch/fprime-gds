@@ -65,6 +65,20 @@ PYTHON_TESTABLE_TYPES = [
 ]
 
 
+def _lists_to_tuples(v):
+    """Recursively convert lists to tuples for comparison.
+
+    ArrayType.val returns tuples instead of lists.  Normalising the
+    expected value lets the shared ``valid_values_test`` compare
+    without caring about the concrete sequence type.
+    """
+    if isinstance(v, list):
+        return tuple(_lists_to_tuples(x) for x in v)
+    if isinstance(v, dict):
+        return {k: _lists_to_tuples(x) for k, x in v.items()}
+    return v
+
+
 def valid_values_test(type_input, valid_values, sizes):
     """Tests to be run on all types"""
     if not isinstance(sizes, Iterable):
@@ -84,7 +98,7 @@ def valid_values_test(type_input, valid_values, sizes):
     # Run on valid values
     for value, size in zip(valid_values, sizes):
         instantiation = type_input(val=value)
-        assert instantiation.val == value
+        assert instantiation.val == _lists_to_tuples(value)
         assert instantiation.getSize() == size
 
         # Check assignment by value
