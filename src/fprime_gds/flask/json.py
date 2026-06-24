@@ -98,10 +98,13 @@ def minimal_event(obj):
 
 
 def minimal_channel(obj):
-    """Minimal channel serialization: time, id, val, display_text, and ert
+    """Minimal channel serialization: time, id, val, optional display_text, and ert
 
     Minimally serializes channel values for use with the flask layer. This does away with any unnecessary data by
-    serializing only the id, value, optional display text, and Earth Received Time (ERT)
+    serializing only the id, value, optional display text, and Earth Received Time (ERT).
+
+    ``display_text`` is only included when the channel template defines a format string.
+    When absent, the UI falls back to the raw ``val``.
 
     Args:
         obj: object to serialize into JSON
@@ -109,13 +112,16 @@ def minimal_channel(obj):
     Returns:
         JSON compatible python anonymous type (dictionary)
     """
-    return {
+    result = {
         "time": obj.time,
         "id": obj.id,
         "val": obj.val_obj.val,
-        "display_text": obj.display_text,
         "ert": obj.ert.isoformat() if hasattr(obj, 'ert') else None,
     }
+    display_text = obj.display_text
+    if display_text is not None:
+        result["display_text"] = display_text
+    return result
 
 
 def minimal_command(obj):
