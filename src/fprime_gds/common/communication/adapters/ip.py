@@ -137,16 +137,19 @@ class IpAdapter(fprime_gds.common.communication.adapters.base.BaseAdapter):
         :param timeout: timeout to wait for data. Needed as the get call below may not interrupt if it waits forever
         :return: data successfully read or "" when no data available within timeout
         """
-        data = b""
-        # The read function should block until data is available, but for efficiency, it should read all data available
-        # thus the data is read, blocking for 0.5 seconds, and then reads as long as it is not empty.
+        # Collect chunks into a list and join once at the end.  The
+        # previous ``data += chunk`` loop was O(n²) in the number of
+        # queued chunks because each ``+=`` copies the accumulated
+        # bytes into a new object.  ``b"".join()`` pre-allocates and
+        # copies in a single pass — O(n) total.
+        chunks = []
         try:
-            data += self.data_chunks.get(timeout=timeout)
+            chunks.append(self.data_chunks.get(timeout=timeout))
             while not self.data_chunks.empty():
-                data += self.data_chunks.get_nowait()
+                chunks.append(self.data_chunks.get_nowait())
         except queue.Empty:
             pass
-        return data
+        return b"".join(chunks)
 
     def th_alive(self, interval):
         """
